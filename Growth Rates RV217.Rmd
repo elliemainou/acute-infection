@@ -1,0 +1,1008 @@
+---
+title: "Estimate Characteristics"
+author: "Ellie Mainou"
+date: "4/6/2021"
+output: html_document
+---
+
+Estimate 
+1. Growth rate 
+
+for all four models: 1. Standard 2. DDDI 3. Macro 4. MacroDDDI
+
+For growth rate: run the model. Use the model-derived viral load measurements for the times that were used as growth data points. Note: disregard the last one--because in many cases you have already reached decay 
+```{r}
+set.seed(1234)
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+```{r}
+#Import modified dataset and make sure that it reads as numbers
+
+NewAcuteData <- read_csv("HIV R files/Acute Infection Models/RV217ForModels4.csv")#use that and not the latest version, because I re-categorized some growth and decay data points. This does not affect the growth that should be derived for the model (the model fit does not change), but it would change how points are picked to calculate the growth rate for the model fit. So keep the old version. 
+#Matrices with parameter values and AIC, BIC, AICc
+StandardFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_5.csv")
+DDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_4.csv")
+MacroFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_4.csv")
+MacroDDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_3.csv")
+PrmErrorMatrixRV217_6 <- read_csv("HIV R files/RV217 Data Analysis /PrmErrorMatrixRV217_6.csv")
+
+ComparePeakT <- read_csv("HIV R files/Acute Infection Models/Model Comparison/ComparePeakT.csv")
+```
+
+
+```{r}
+ID<-unique(StandardFittedPrms$ID) #ID.initial[-x]  #participant IDs
+observations= length(ID)
+
+
+# StandardFittedPrms<-StandardFittedPrms[-x, ]
+# DDDIFittedPrms<-DDDIFittedPrms[-x, ]
+# MacroFittedPrms<-MacroFittedPrms[-x, ]
+# MacroDDDIFittedPrms<-MacroDDDIFittedPrms[-x, ]
+# ComparePeakT<-ComparePeakT[-x, ]
+
+# Model Equations
+Hstart=1e6
+b=0.01
+d=0.01
+T.start=1e6
+
+Model.Standard <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( (delta+r)*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+} 
+
+Model.DDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( r*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I^(gamma+1)
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+}
+
+Model.Macro <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+    beta=(r+eta)*(r+alpha+b)/Hstart/(10^log10lambda-r-alpha-b)
+    dH <- b*Hstart - b*H - alpha*P 
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - alpha*P - alpha*(1+k)/k*P^2/H 
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+Model.MacroDDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+  if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+  }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+  }    
+    dH <- b*Hstart - b*H -  alpha^(gamma+1)*(P^(gamma+1))/H^(gamma+1-1)
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - (alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+}
+```
+
+
+```{r}
+# Matrices with growth and squared errors among models 
+names<-c("ID", "GrowthRate", "Standard", "SQ_Standard", "DDDI", "SQ_DDDI", "Macro", "SQ_Macro", "MacroDDDI", "SQ_MacroDDDI",  "Model")
+CompareGrowth<-as.data.frame(matrix(data=NA, nrow=length(ID), ncol=length(names)))
+colnames(CompareGrowth)<-names
+CompareGrowth$ID<-ID
+
+
+names<-c("ID", "Standard", "DDDI", "Macro", "MacroDDDI", "Model")
+InterceptGrowth<-as.data.frame(matrix(data=NA, nrow=length(ID), ncol=length(names)))
+colnames(InterceptGrowth)<-names
+InterceptGrowth$ID<-ID
+
+```
+
+
+```{r}
+#Round t0 to the first decimal place
+StandardFittedPrms$t0<-round(StandardFittedPrms$t0, 0)
+DDDIFittedPrms$t0<-round(DDDIFittedPrms$t0, 0)
+MacroFittedPrms$t0<-round(MacroFittedPrms$t0, 0)
+MacroDDDIFittedPrms$t0<-round(MacroDDDIFittedPrms$t0, 0)
+```
+
+```{r}
+#remove participants that did not fit well
+remove.participants<-c("20178", "40491")
+ID.initial<-unique(StandardFittedPrms$ID)
+
+x<-c()
+for (i in 1:length(remove.participants)){
+ x[i]=which(ID.initial==remove.participants[i])
+
+}
+
+
+for (i in seq(4, observations, 1)[-x]){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 90, 1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 90, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+  
+#Use the following for cases when there are enough days.   
+#Growth rate
+CompareGrowth$GrowthRate[i]<- PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])] 
+
+#Standard
+time_Standard<-soln.Standard$time[3:which(soln.Standard$time==round(ComparePeakT$Standard[i]-5, 0))]
+vl_Standard<-log10(soln.Standard$V[3:which(soln.Standard$time==round(ComparePeakT$Standard[i]-5, 0))])
+
+Growth_Standard=lm(vl_Standard~time_Standard)
+
+CompareGrowth$Standard[which(CompareGrowth$ID==ID[i])]=Growth_Standard$coefficients[2]
+InterceptGrowth$Standard[which(CompareGrowth$ID==ID[i])]=Growth_Standard$coefficients[1]
+
+#DDDI
+time_DDDI<-soln.DDDI$time[5:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-5, 0))]
+vl_DDDI<-log10(soln.DDDI$V[5:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-5, 0))])
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[which(CompareGrowth$ID==ID[i])]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[which(CompareGrowth$ID==ID[i])]=Growth_DDDI$coefficients[1]
+
+#Macro
+time_Macro<-soln.Macro$time[5:which(soln.Macro$time==round(ComparePeakT$Macro[i]-5, 0))]
+vl_Macro<-log10(soln.Macro$V[5:which(soln.Macro$time==round(ComparePeakT$Macro[i]-5, 0))])
+
+Growth_Macro=lm(vl_Macro~time_Macro)
+
+CompareGrowth$Macro[which(CompareGrowth$ID==ID[i])]=Growth_Macro$coefficients[2]
+InterceptGrowth$Macro[which(CompareGrowth$ID==ID[i])]=Growth_Macro$coefficients[1]
+
+#MacroDDDI
+time_MacroDDDI<-soln.MacroDDDI$time[5:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]-5, 0))]
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[5:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]
+                                                                           -5, 0))])
+
+Growth_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[2]
+InterceptGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[1]
+}
+
+
+#write.csv(CompareGrowth, file="CompareGrowth.csv")
+#write.csv(InterceptGrowth, file="InterceptGrowth.csv")
+```
+
+```{r}
+i=3
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 90, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+  
+time_MacroDDDI<-soln.MacroDDDI$time[1:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]-1, 0))]
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[1:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]
+                                                                           -1, 0))])
+
+Growth_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[2]
+InterceptGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[1]
+
+
+i=5
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 90, 1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#Standard
+time_Standard<-soln.Standard$time[2:which(soln.Standard$time==round(ComparePeakT$Standard[i]-1, 0))]
+vl_Standard<-log10(soln.Standard$V[2:which(soln.Standard$time==round(ComparePeakT$Standard[i]-1, 0))])
+
+Growth_Standard=lm(vl_Standard~time_Standard)
+
+CompareGrowth$Standard[which(CompareGrowth$ID==ID[i])]=Growth_Standard$coefficients[2]
+InterceptGrowth$Standard[which(CompareGrowth$ID==ID[i])]=Growth_Standard$coefficients[1]
+
+
+x<-c(14, 45)
+for (i in x){
+ #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+  #DDDI
+time_DDDI<-soln.DDDI$time[2:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-2, 0))]
+vl_DDDI<-log10(soln.DDDI$V[2:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-2, 0))])
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+}
+
+write.csv(CompareGrowth, file="CompareGrowth.csv")
+write.csv(InterceptGrowth, file="InterceptGrowth.csv")
+```
+
+
+Plot data and growth rates 
+```{r}
+# StandardFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_3.csv")
+# DDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_3.csv")
+# MacroFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_3.csv")
+# MacroDDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_2.csv")
+# 
+# CompareGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareGrowth.csv")
+# InterceptGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/InterceptGrowth.csv")
+
+x1<-CompareGrowth$ID[which(is.na(CompareGrowth$GrowthRate))]
+x<-c(x1, 40491)
+x<-x[order(x)]
+
+for (i in 1:length(x)){
+  StandardFittedPrms<-StandardFittedPrms[-which(StandardFittedPrms$ID==x[i]), ]
+  DDDIFittedPrms<-DDDIFittedPrms[-which(DDDIFittedPrms$ID==x[i]), ]
+  MacroFittedPrms<-MacroFittedPrms[-which(MacroFittedPrms$ID==x[i]), ]
+  MacroDDDIFittedPrms<-MacroDDDIFittedPrms[-which(MacroDDDIFittedPrms$ID==x[i]), ]
+  CompareGrowth<-CompareGrowth[-which(CompareGrowth$ID==x[i]), ]
+  InterceptGrowth<-InterceptGrowth[-which(InterceptGrowth$ID==x[i]), ]
+}
+
+
+pdf("GrowthRates.pdf")
+
+for (i in 1:nrow(CompareGrowth)){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 100, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+
+#Plot results
+ID.current <- CompareGrowth$ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+###Standard
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Standard", main = bquote(ID == .(ID.current)))
+#model-derived growth line
+abline(a=InterceptGrowth$Standard[i], b=CompareGrowth$Standard[i], col="red")
+#data-derived growth line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+
+##DDDI
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load- DDDI", main = bquote(ID == .(ID.current)))
+#model-derived growth line
+abline(a=InterceptGrowth$DDDI[i], b=CompareGrowth$DDDI[i], col="red")
+#data-derived growth line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+
+##Macro
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Macroparasite", main = bquote(ID == .(ID.current)))
+#model-derived growth line
+abline(a=InterceptGrowth$Macro[i], b=CompareGrowth$Macro[i], col="red")
+#data-derived growth line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+##MacroDDDI
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-MacroDDDI", main = bquote(ID == .(ID.current)))
+#model-derived decay line
+abline(a=InterceptGrowth$MacroDDDI[i], b=CompareGrowth$MacroDDDI[i], col="red")
+#data-derived decay line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+}
+
+dev.off()
+```
+
+
+```{r}
+StandardFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_3.csv")
+DDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_3.csv")
+MacroFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_3.csv")
+MacroDDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_2.csv")
+ComparePeakT <- read_csv("HIV R files/Acute Infection Models/Model Comparison/ComparePeakT.csv")
+
+CompareGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareGrowth.csv")
+InterceptGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/InterceptGrowth.csv")
+
+#Round t0 to the first decimal place
+StandardFittedPrms$t0<-round(StandardFittedPrms$t0, 0)
+DDDIFittedPrms$t0<-round(DDDIFittedPrms$t0, 0)
+MacroFittedPrms$t0<-round(MacroFittedPrms$t0, 0)
+MacroDDDIFittedPrms$t0<-round(MacroDDDIFittedPrms$t0, 0)
+
+
+x<-c(26, 32, 48)
+
+for (i in x){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+time_DDDI<-soln.DDDI$time[4:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-7, 0))]
+vl_DDDI<-log10(soln.DDDI$V[4:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-7, 0))])
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+
+}
+
+i=48
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+time_DDDI<-soln.DDDI$time[8:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-10, 0))]
+vl_DDDI<-log10(soln.DDDI$V[8:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-10, 0))])
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+
+
+x<-c(6, 8, 21)
+for (i in x){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+ #MacroDDDI
+time_MacroDDDI<-soln.MacroDDDI$time[6:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]-6, 0))]
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[6:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]
+                                                                           -6, 0))])
+
+Growth_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[2]
+InterceptGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[1]
+}
+
+i=21
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+ #MacroDDDI
+time_MacroDDDI<-soln.MacroDDDI$time[10:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]-12, 0))]
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[10:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]
+                                                                           -12, 0))])
+
+Growth_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[2]
+InterceptGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[1]
+
+i=48
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+ #MacroDDDI
+time_MacroDDDI<-soln.MacroDDDI$time[10:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]-12, 0))]
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[10:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]
+                                                                           -12, 0))])
+
+Growth_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[2]
+InterceptGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[1]
+
+
+i=which(ID==40094)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+)
+
+soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+time_DDDI<-soln.DDDI$time[5:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-7, 0))]
+vl_DDDI<-log10(soln.DDDI$V[5:which(soln.DDDI$time==round(ComparePeakT$DDDI[i]-7, 0))])
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+
+Growth_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareGrowth$DDDI[i]=Growth_DDDI$coefficients[2]
+InterceptGrowth$DDDI[i]=Growth_DDDI$coefficients[1] 
+
+i=which(ID==40094)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+time_MacroDDDI<-soln.MacroDDDI$time[10:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]-5, 0))]
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[10:which(soln.MacroDDDI$time==round(ComparePeakT$MacroDDDI[i]
+                                                                         -5, 0))])
+
+Growth_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[2]
+InterceptGrowth$MacroDDDI[which(CompareGrowth$ID==ID[i])]=Growth_MacroDDDI$coefficients[1]
+
+
+write.csv(CompareGrowth, file="CompareGrowth.csv")
+write.csv(InterceptGrowth, file="InterceptGrowth.csv")
+```
+
+
+Plot data and growth rates 
+```{r}
+# StandardFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_3.csv")
+# DDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_3.csv")
+# MacroFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_3.csv")
+# MacroDDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_2.csv")
+# 
+# CompareGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareGrowth.csv")
+# InterceptGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/InterceptGrowth.csv")
+
+x1<-CompareGrowth$ID[which(is.na(CompareGrowth$GrowthRate))]
+x<-c(x1, 40491)
+x<-x[order(x)]
+
+for (i in 1:length(x)){
+  StandardFittedPrms<-StandardFittedPrms[-which(StandardFittedPrms$ID==x[i]), ]
+  DDDIFittedPrms<-DDDIFittedPrms[-which(DDDIFittedPrms$ID==x[i]), ]
+  MacroFittedPrms<-MacroFittedPrms[-which(MacroFittedPrms$ID==x[i]), ]
+  MacroDDDIFittedPrms<-MacroDDDIFittedPrms[-which(MacroDDDIFittedPrms$ID==x[i]), ]
+  CompareGrowth<-CompareGrowth[-which(CompareGrowth$ID==x[i]), ]
+  InterceptGrowth<-InterceptGrowth[-which(InterceptGrowth$ID==x[i]), ]
+}
+
+
+pdf("GrowthRates2.pdf")
+
+for (i in 1:nrow(CompareGrowth)){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==CompareGrowth$ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 100, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+
+#Plot results
+ID.current <- CompareGrowth$ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+###Standard
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Standard", main = bquote(ID == .(ID.current)))
+#model-derived growth line
+abline(a=InterceptGrowth$Standard[i], b=CompareGrowth$Standard[i], col="red")
+#data-derived growth line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+
+##DDDI
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load- DDDI", main = bquote(ID == .(ID.current)))
+#model-derived growth line
+abline(a=InterceptGrowth$DDDI[i], b=CompareGrowth$DDDI[i], col="red")
+#data-derived growth line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+
+##Macro
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Macroparasite", main = bquote(ID == .(ID.current)))
+#model-derived growth line
+abline(a=InterceptGrowth$Macro[i], b=CompareGrowth$Macro[i], col="red")
+#data-derived growth line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+##MacroDDDI
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-MacroDDDI", main = bquote(ID == .(ID.current)))
+#model-derived decay line
+abline(a=InterceptGrowth$MacroDDDI[i], b=CompareGrowth$MacroDDDI[i], col="red")
+#data-derived decay line
+abline(a=PrmErrorMatrixRV217_6$A[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], b=PrmErrorMatrixRV217_6$r[which(PrmErrorMatrixRV217_6$ID==CompareGrowth$ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+}
+
+dev.off()
+```
+
+
+```{r}
+CompareGrowth <- read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareGrowth.csv")
+
+#Find which model predicts growth rate better
+for (i in 1:nrow(CompareGrowth)){
+  if(!is.na(CompareGrowth$GrowthRate[i])){
+    x0<-(CompareGrowth$GrowthRate[i]-CompareGrowth$Standard[i])^2
+    CompareGrowth$SQ_Standard[i]<-x0
+    x1<-(CompareGrowth$GrowthRate[i]-CompareGrowth$DDDI[i])^2
+    CompareGrowth$SQ_DDDI[i]<-x1
+    x2<-(CompareGrowth$GrowthRate[i]-CompareGrowth$Macro[i])^2
+    CompareGrowth$SQ_Macro[i]<-x2
+    x3<-(CompareGrowth$GrowthRate[i]-CompareGrowth$MacroDDDI[i])^2
+    CompareGrowth$SQ_MacroDDDI[i]<-x3
+    
+  if( min(x0, x1, x2,x3)==x0){
+  CompareGrowth$Model[i]<-"Standard"
+  }else if ( min(x0, x1, x2,x3)==x1){
+      CompareGrowth$Model[i]<-"Macro"
+    }else if ( min(x0, x1, x2,x3)==x2){
+      CompareGrowth$Model[i]<-"DDDI"
+    }else if ( min(x0, x1, x2,x3)==x3){
+      CompareGrowth$Model[i]<-"MacroDDDI"
+    }
+  }
+}
+
+write.csv(CompareGrowth, file="CompareGrowth.csv")
+```
+

@@ -1,0 +1,502 @@
+---
+title: "Macroparasite Model"
+author: "Ellie Mainou"
+date: "3/29/2021"
+output: html_document
+---
+
+# Import dataset and relevant matrices 
+```{r}
+set.seed(1234)
+#Import modified dataset and make sure that it reads as numbers
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+```{r}
+#RV217 Dataset
+AcuteData <- read.csv("HIV R files/Acute Infection Models/RV217ForModels4.csv", header=TRUE)
+#Matrix that contains initial parameter values for each patient
+MacroPrmIV <- as.data.frame(read_excel("HIV R files/Acute Infection Models/Model Fitting/Macroparasite_RV217_PrmIV.xlsx"))
+```
+
+
+```{r}
+ID<-unique(AcuteData$ID)  #participant IDs
+observations= length(ID)
+
+#Set up 
+Hstart=10^6
+b=0.01
+
+names<-c("ID", "log10lambda","alpha",  "eta", "k", "r", "t0", "error value", "n", "nll", "AIC", "BIC", "AICc")
+
+#Equations
+Macro <- function (t, x, params) {
+ H <- x[1]
+ V <- x[2]
+ P <- x[3]
+ Hstart=Hstart
+ b=b
+ log10lambda<-params[1]
+ alpha <- params[2]
+ eta <- params[3]
+ k<-params[4]
+ r=params[5]
+ t0=params[6]
+ beta=(r+eta)*(r+alpha+b)/Hstart/(10^log10lambda-r-alpha-b)
+ dH <- b*Hstart - b*H - alpha*P 
+ dV <- 10^log10lambda*P - eta*V - beta*H*V
+ dP <-  beta*H*V - b*P - alpha*P - alpha*(1+k)/k*P^2/H
+ list(c(dH,dV,dP))
+}
+
+#Objective function
+sse.sir.Macro <- function(params0, data, time.points) {
+   log10lambda <- params0[1]
+   alpha <- params0[2]
+   eta <- params0[3]
+   k <- params0[4]
+   r <- params0[5]
+   t0<-params0[6]
+   H0 <- x_init[1]
+   V0 <- x_init[2]
+   P0 <- x_init[3]
+   out <-as.data.frame(ode(y= c(H=H0,V=V0,P=P0), times=c(t0,time.points), Macro, parms=c(log10lambda,alpha, eta, k, r, t0), method="lsoda"))
+   outV <- out$V[2:length(out$V)]
+   sse <- sum( (log10(outV) - data$log10vl)^2 )/n
+}
+
+#Simulate with fitted values 
+Model.Macro <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+    beta=(r+eta)*(r+alpha+b)/Hstart/(10^log10lambda-r-alpha-b)
+    dH <- b*Hstart - b*H - alpha*P 
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - alpha*P - alpha*(1+k)/k*P^2/H 
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+k<-length(c("log10lambda", "alpha", "eta", "k", "r", "t0" )) #number of parameters in the model 
+
+```
+
+
+```{r}
+#Create matrix that contains fitted values for each patient. 
+MacroFittedPrms<-as.data.frame(matrix(data=NA, nrow = observations, ncol= length(names)))
+colnames(MacroFittedPrms)<-names
+MacroFittedPrms$ID<-ID
+
+for (i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  
+params0 <- c(log10lambda=as.numeric(MacroPrmIV$log10lambda[i]), alpha=as.numeric(MacroPrmIV$alpha[i]), eta=as.numeric(MacroPrmIV$eta[i]), k=as.numeric(MacroPrmIV$k[i]), r=as.numeric(MacroPrmIV$r[i]), t0=as.numeric(MacroPrmIV$t0[i]))
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Macro, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.01,0.01,0.01,0.01,-50),  upper= c(5,5,200,10,5, 10))
+  MacroFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroFittedPrms$alpha[i]=fit0$par[2]
+  MacroFittedPrms$eta[i]=fit0$par[3]
+  MacroFittedPrms$k[i]=fit0$par[4]
+  MacroFittedPrms$r[i]=fit0$par[5]
+  MacroFittedPrms$t0[i]=fit0$par[6]
+  MacroFittedPrms$`error value`[i]=fit0$value
+}
+
+#write.csv(MacroFittedPrms, file="MacroFittedPrms_1.csv")
+```
+
+```{r}
+pdf("MacroFitsRV217_1.pdf")
+
+for (i in 1:observations){ #
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], max(time.points), 1), Model.Macro, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(MacroFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), col="red",type="l",  xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current))) 
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(MacroFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), xlab="", ylab="") 
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  MacroFittedPrms$n[i]=n
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  MacroFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  MacroFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  MacroFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  MacroFittedPrms$AICc[i]=MacroFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(MacroFittedPrms$log10lambda, breaks=10, xlab = "log10lambda", main="")
+hist(MacroFittedPrms$alpha, breaks=10, xlab = "alpha", main="")
+hist(MacroFittedPrms$eta, breaks=10, xlab = "eta", main="")
+hist(MacroFittedPrms$r, breaks=10, xlab = "r", main="")
+hist(MacroFittedPrms$k, breaks=10, xlab = "k", main="")
+hist(MacroFittedPrms$t0, breaks=10, xlab = "t0", main="")
+hist(MacroFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(MacroFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(MacroFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(MacroFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+
+write.csv(MacroFittedPrms, file="MacroFittedPrms_1.csv")
+```
+
+
+```{r}
+i=9 #10723
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  
+params0 <- c(log10lambda=as.numeric(MacroPrmIV$log10lambda[i]), alpha=as.numeric(MacroPrmIV$alpha[i]), eta=as.numeric(MacroPrmIV$eta[i]), k=as.numeric(MacroPrmIV$k[i]), r=as.numeric(MacroPrmIV$r[i])-0.1, t0=as.numeric(MacroPrmIV$t0[i]))
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Macro, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0.001, 0.01,0.01,0.01,0.01,-30),  upper= c(5,5,200,10,5, 10))
+  MacroFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroFittedPrms$alpha[i]=fit0$par[2]
+  MacroFittedPrms$eta[i]=fit0$par[3]
+  MacroFittedPrms$k[i]=fit0$par[4]
+  MacroFittedPrms$r[i]=fit0$par[5]
+  MacroFittedPrms$t0[i]=fit0$par[6]
+  MacroFittedPrms$`error value`[i]=fit0$value
+
+write.csv(MacroFittedPrms, file="MacroFittedPrms_2.csv")
+```
+
+```{r}
+pdf("MacroFitsRV217_2.pdf")
+
+for (i in 1:observations){ 
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], max(time.points), 1), Model.Macro, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(MacroFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), col="red",type="l",  xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current))) 
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(MacroFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), xlab="", ylab="") 
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  MacroFittedPrms$n[i]=n
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  MacroFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  MacroFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  MacroFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  MacroFittedPrms$AICc[i]=MacroFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(MacroFittedPrms$log10lambda, breaks=10, xlab = "log10lambda", main="")
+hist(MacroFittedPrms$alpha, breaks=10, xlab = "alpha", main="")
+hist(MacroFittedPrms$eta, breaks=10, xlab = "eta", main="")
+hist(MacroFittedPrms$r, breaks=10, xlab = "r", main="")
+hist(MacroFittedPrms$k, breaks=10, xlab = "k", main="")
+hist(MacroFittedPrms$t0, breaks=10, xlab = "t0", main="")
+hist(MacroFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(MacroFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(MacroFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(MacroFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+Summary_Macro<-as.data.frame(matrix(data=NA, nrow=3, ncol=(k+1)))
+colnames(Summary_Macro)=c("log10lambda","alpha", "eta", "k", "r", "t0", "beta")
+rownames(Summary_Macro)=c("mean", "median", "sd")
+
+beta<- (MacroFittedPrms$r+MacroFittedPrms$eta)*(MacroFittedPrms$r+MacroFittedPrms$alpha+rep(b, nrow(MacroFittedPrms)))/(Hstart*(10^(MacroFittedPrms$log10lambda)-MacroFittedPrms$r-MacroFittedPrms$alpha-rep(b, nrow(MacroFittedPrms))))
+
+for (j in 1:k){
+  Summary_Macro[1, j]=mean(MacroFittedPrms[, 1+j])
+  Summary_Macro[2, j]=median(MacroFittedPrms[, 1+j])
+  Summary_Macro[3, j]=sd(MacroFittedPrms[, 1+j])
+
+}
+
+j=7
+Summary_Macro[1, j]=mean(beta)
+Summary_Macro[2, j]=median(beta)
+Summary_Macro[3, j]=sd(beta)
+
+write.csv(Summary_Macro, file="Summary_Macro_2.csv")
+
+
+write.csv(MacroFittedPrms, file="MacroFittedPrms_2.csv")
+```
+
+
+```{r}
+#RV217 Dataset
+AcuteData <- read.csv("HIV R files/Acute Infection Models/RV217ForModels3.csv", header=TRUE)
+#Matrix that contains initial parameter values for each patient
+MacroPrmIV <- as.data.frame(read_excel("HIV R files/Acute Infection Models/Model Fitting/Macroparasite_RV217_PrmIV.xlsx"))
+MacroFittedPrms <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_2.csv"))
+```
+
+
+```{r}
+ID.remove<-c(20382, 20799, 20863, 21006, 21010)
+
+for(j in 1:length(ID.remove)){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID.remove[j]), ]
+  i=which(MacroFittedPrms$ID==ID.remove[j])
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  
+params0 <- c(log10lambda=as.numeric(MacroPrmIV$log10lambda[i]), alpha=as.numeric(MacroPrmIV$alpha[i]), eta=as.numeric(MacroPrmIV$eta[i]), k=as.numeric(MacroPrmIV$k[i]), r=as.numeric(MacroPrmIV$r[i]), t0=as.numeric(MacroPrmIV$t0[i]))
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Macro, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.01,0.01,0.01,0.01,-50),  upper= c(5,5,200,10,5, 10))
+  MacroFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroFittedPrms$alpha[i]=fit0$par[2]
+  MacroFittedPrms$eta[i]=fit0$par[3]
+  MacroFittedPrms$k[i]=fit0$par[4]
+  MacroFittedPrms$r[i]=fit0$par[5]
+  MacroFittedPrms$t0[i]=fit0$par[6]
+  MacroFittedPrms$`error value`[i]=fit0$value
+}
+
+j=3  
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID.remove[j]), ]
+  i=which(MacroFittedPrms$ID==ID.remove[j])
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  
+params0 <- c(log10lambda=as.numeric(MacroPrmIV$log10lambda[i]), alpha=as.numeric(MacroPrmIV$alpha[i]), eta=as.numeric(MacroPrmIV$eta[i]), k=as.numeric(MacroPrmIV$k[i]), r=as.numeric(MacroPrmIV$r[i]), t0=as.numeric(MacroPrmIV$t0[i])+10)
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Macro, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.01,0.01,0.01,0.01,-50),  upper= c(5,5,200,10,5, 10))
+  MacroFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroFittedPrms$alpha[i]=fit0$par[2]
+  MacroFittedPrms$eta[i]=fit0$par[3]
+  MacroFittedPrms$k[i]=fit0$par[4]
+  MacroFittedPrms$r[i]=fit0$par[5]
+  MacroFittedPrms$t0[i]=fit0$par[6]
+  MacroFittedPrms$`error value`[i]=fit0$value
+  
+  
+i=which(ID==40283)
+
+#Data
+patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+n=nrow(vldata)
+
+
+params0 <- c(log10lambda=as.numeric(MacroPrmIV$log10lambda[i]), 
+             alpha=as.numeric(MacroPrmIV$alpha[i]), eta=as.numeric(MacroPrmIV$eta[i]), 
+             k=as.numeric(MacroPrmIV$k[i]), r=as.numeric(MacroPrmIV$r[i])-0.1, 
+             t0=as.numeric(MacroPrmIV$t0[i]))
+
+x_init <- c(H=Hstart,V=1, P=0)
+
+#Fitting step
+fit0 <- optim(params0, sse.sir.Macro, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", 
+              #lower=c(0.001, 0.01,0.01,0.01,0.01,-50),  upper= c(5,5,200,10,5, 10))
+MacroFittedPrms$log10lambda[i]=fit0$par[1]
+MacroFittedPrms$alpha[i]=fit0$par[2]
+MacroFittedPrms$eta[i]=fit0$par[3]
+MacroFittedPrms$k[i]=fit0$par[4]
+MacroFittedPrms$r[i]=fit0$par[5]
+MacroFittedPrms$t0[i]=fit0$par[6]
+MacroFittedPrms$`error value`[i]=fit0$value
+  
+```
+
+```{r}
+pdf("MacroFitsRV217_3.pdf")
+
+for (i in 1:observations){ 
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], max(time.points), 1), Model.Macro, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(MacroFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), col="red",type="l",  xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current))) 
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(MacroFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), xlab="", ylab="") 
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  MacroFittedPrms$n[i]=n
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  MacroFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  MacroFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  MacroFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  MacroFittedPrms$AICc[i]=MacroFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(MacroFittedPrms$log10lambda, breaks=10, xlab = "log10lambda", main="")
+hist(MacroFittedPrms$alpha, breaks=10, xlab = "alpha", main="")
+hist(MacroFittedPrms$eta, breaks=10, xlab = "eta", main="")
+hist(MacroFittedPrms$r, breaks=10, xlab = "r", main="")
+hist(MacroFittedPrms$k, breaks=10, xlab = "k", main="")
+hist(MacroFittedPrms$t0, breaks=10, xlab = "t0", main="")
+hist(MacroFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(MacroFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(MacroFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(MacroFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+Summary_Macro<-as.data.frame(matrix(data=NA, nrow=3, ncol=(k+1)))
+colnames(Summary_Macro)=c("log10lambda","alpha", "eta", "k", "r", "t0", "beta")
+rownames(Summary_Macro)=c("mean", "median", "sd")
+
+beta<- (MacroFittedPrms$r+MacroFittedPrms$eta)*(MacroFittedPrms$r+MacroFittedPrms$alpha+rep(b, nrow(MacroFittedPrms)))/(Hstart*(10^(MacroFittedPrms$log10lambda)-MacroFittedPrms$r-MacroFittedPrms$alpha-rep(b, nrow(MacroFittedPrms))))
+
+for (j in 1:k){
+  Summary_Macro[1, j]=mean(MacroFittedPrms[, 1+j])
+  Summary_Macro[2, j]=median(MacroFittedPrms[, 1+j])
+  Summary_Macro[3, j]=sd(MacroFittedPrms[, 1+j])
+
+}
+
+j=7
+Summary_Macro[1, j]=mean(beta)
+Summary_Macro[2, j]=median(beta)
+Summary_Macro[3, j]=sd(beta)
+
+write.csv(Summary_Macro, file="Summary_Macro_3.csv")
+
+
+write.csv(MacroFittedPrms, file="MacroFittedPrms_3.csv")
+```

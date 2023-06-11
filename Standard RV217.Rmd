@@ -1,0 +1,607 @@
+---
+title: "Stafford New Data"
+author: "Ellie Mainou"
+date: "3/26/2021"
+output: html_document
+---
+
+
+# Import dataset and relevant matrices 
+```{r}
+set.seed(1234)
+#Import modified dataset and make sure that it reads as numbers
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+```{r}
+#RV217 Dataset
+AcuteData <- read_csv("HIV R files/Acute Infection Models/RV217ForModels4.csv")
+#Matrix that contains initial parameter values for each patient
+StandardPrmIV <- as.data.frame( read_excel("HIV R files/Acute Infection Models/Model Fitting/Standard_RV217_PrmIV.xlsx"))
+```
+
+```{r}
+ID<-unique(AcuteData$ID)  #participant IDs
+observations= length(ID)
+```
+
+
+```{r}
+#Setup 
+d=0.01
+T.start=10^6
+
+names<-c("ID", "log10p", "delta", "c", "r", "t0", "error value", "n", "nll", "AIC", "BIC", "AICc")
+
+#Equations
+StandardModel <- function (t, x, params) {
+ T <- x[1]
+ I <- x[2]
+ V <- x[3]
+ d=d
+ T.start=T.start
+ log10p <- params[1]
+ delta <- params[2]
+ c<-params[3]
+ r<-params[4]
+ t0<-params[5]
+ k <- ( r*r + r*(c+delta) + c*delta ) / ( 10^log10p*T.start )
+ dT <- d*T.start -d*T - k*T*V
+ dI <- k*T*V - delta*I
+ dV <- 10^log10p*I - c*V 
+ list(c(dT,dI,dV))
+}
+
+#Objective function
+sse.sir.Standard <- function(params0, data, time.points) {
+   log10p <- params0[1]
+   delta <- params0[2]
+   c <- params0[3]
+   r <- params0[4]
+   t0 <- params0[5]
+   T0 <- x_init[1]
+   I0 <- x_init[2]
+   V0 <- x_init[3]
+   out <-as.data.frame(ode(y= c(T=T0,I=I0,V=V0), times=c(t0, time.points), StandardModel, parms=c(log10p, delta, c, r, t0), method="lsoda"))
+   outV <- out$V[2:length(out$V)]
+   sse <- sum( (log10(outV) - data$log10vl)^2 )/n
+}
+
+#Simulate with fitted values 
+Model.Standard <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( (delta+r)*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+} 
+
+
+k<-length(c("log10p","delta", "c", "r", "t0")) #number of parameters in the model 
+
+```
+
+```{r}
+#Create matrix that contains fitted values for each patient. 
+StandardFittedPrms<-as.data.frame(matrix(data=NA, nrow = observations, ncol= length(names)))
+colnames(StandardFittedPrms)<-names
+StandardFittedPrms$ID<-ID
+
+#Optimize for each individual
+for(i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i]), t0=as.numeric(StandardPrmIV$t0[i]))
+ 
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -50),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+}
+
+write.csv(StandardFittedPrms, file="StandardFittedPrms_1.csv")
+```
+
+```{r}
+pdf("StandardFitsRV217_1.pdf")
+
+for (i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+   
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+  
+
+  parameters=list(    
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i], 
+  t0=StandardFittedPrms$t0[i]
+  )
+  
+soln=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], max(time.points), 1), Model.Standard, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(StandardFittedPrms$t0[i], max(time.points)), col="red",type="l", ylim=c(0, 10), xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(StandardFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), xlab="", ylab="")
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+
+#Calculate AIC, BIC, AICc
+StandardFittedPrms$n[i]=n
+
+soln<-soln[2:nrow(soln), ]
+outV <- soln$V[time.points]
+sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+StandardFittedPrms$nll[i]<-nll
+
+#Calculate AIC
+StandardFittedPrms$AIC[i]=2*k+2*nll
+
+#Calculate BIC
+StandardFittedPrms$BIC[i]=log(n)*k+2*nll
+
+#Calculate AICc
+StandardFittedPrms$AICc[i]=StandardFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(StandardFittedPrms$log10p, breaks=10, xlab = "log10(p)", main="")
+hist(log10(StandardFittedPrms$delta), breaks=10, xlab = "log10(delta)", main="")
+hist(StandardFittedPrms$r, breaks=10, xlab = "r (fitted)", main="")
+hist(StandardFittedPrms$c, breaks=10, xlab = "c", main="")
+hist(StandardFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(StandardFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(StandardFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(StandardFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+write.csv(StandardFittedPrms, file="StandardFittedPrms_New.csv")
+
+```
+
+```{r}
+#Refit 40250 (i=42): problem= too high t0
+i=42
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i]), t0=as.numeric(StandardPrmIV$t0[i]))
+   
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+  
+x=c(3, 5, 9, 12, 13, 29, 46)
+for ( i in x){
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i])-0.1, t0=as.numeric(StandardPrmIV$t0[i]))
+   
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+  
+}
+
+
+x=c(3, 5, 9, 12, 13, 28, 29, 46)
+for ( i in x){
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i])-0.1, t0=as.numeric(StandardPrmIV$t0[i]))
+   
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+  
+}
+
+i=5
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i])-0.6, t0=as.numeric(StandardPrmIV$t0[i]))
+   
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+  
+i=13
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i])-0.2, t0=as.numeric(StandardPrmIV$t0[i])-15)
+   
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+  
+  
+write.csv(StandardFittedPrms, file="StandardFittedPrms_2.csv")
+```
+
+Now fit again the study participants for whom you removed a data point. 
+
+```{r}
+#RV217 Dataset
+AcuteData <- read.csv("HIV R files/Acute Infection Models/RV217ForModels3.csv", header=TRUE)
+#Matrix that contains initial parameter values for each patient
+StandardPrmIV <- as.data.frame(read_excel("HIV R files/Acute Infection Models/Model Fitting/Standard_RV217_PrmIV.xlsx"))
+#Matrix with parameter values 
+StandardFittedPrms <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_2.csv"))
+```
+
+
+```{r}
+ID.remove<-c(20382, 20799, 20863, 21006, 21010)
+
+for(j in 1:length(ID.remove)){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID.remove[j]), ]
+  i=which(StandardFittedPrms$ID==ID.remove[j])
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i]), t0=as.numeric(StandardPrmIV$t0[i]))
+ 
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points))#, method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -50),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value 
+}
+#write.csv(StandardFittedPrms, file="StandardFittedPrms_3.csv")
+```
+
+```{r}
+pdf("StandardFitsRV217_3.pdf")
+
+for (i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+   
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+  
+
+  parameters=list(    
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i], 
+  t0=StandardFittedPrms$t0[i]
+  )
+  
+soln=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], max(time.points)+1, 1), Model.Standard, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(StandardFittedPrms$t0[i], max(time.points)+1), col="red",type="l", ylim=c(0, 10), xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(StandardFittedPrms$t0[i], max(time.points)+1), ylim=c(0, 10), xlab="", ylab="")
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+
+#Calculate AIC, BIC, AICc
+  StandardFittedPrms$n[i]=n
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  StandardFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  StandardFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  StandardFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  StandardFittedPrms$AICc[i]=StandardFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(StandardFittedPrms$log10p, breaks=10, xlab = "log10(p)", main="")
+hist(log10(StandardFittedPrms$delta), breaks=10, xlab = "log10(delta)", main="")
+hist(StandardFittedPrms$r, breaks=10, xlab = "r (fitted)", main="")
+hist(StandardFittedPrms$c, breaks=10, xlab = "c", main="")
+hist(StandardFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(StandardFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(StandardFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(StandardFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+SummaryStandard<-as.data.frame(matrix(data=NA, nrow=3, ncol=k))
+colnames(SummaryStandard)=c("log10p","delta", "c", "r", "t0")
+rownames(SummaryStandard)=c("mean", "median", "sd")
+
+for (j in 1:k){
+  SummaryStandard[1, j]=mean(StandardFittedPrms[, 1+j])
+  SummaryStandard[2, j]=median(StandardFittedPrms[, 1+j])
+  SummaryStandard[3, j]=sd(StandardFittedPrms[, 1+j])
+}
+
+write.csv(SummaryStandard, file="SummaryStandard_3.csv")
+write.csv(SummaryStandard, file="SummaryStandard.csv")
+
+xwrite.csv(StandardFittedPrms, file="StandardFittedPrms_3.csv")
+
+
+beta<-c()
+
+for (i in 1:observations){
+   beta[i] <- ( (StandardFittedPrms$delta[i]+StandardFittedPrms$r[i])*(StandardFittedPrms$c[i]+StandardFittedPrms$r[i]) ) / ( 10^StandardFittedPrms$log10p[i]*T.start )
+}
+
+mean(beta)
+median(beta)
+```
+
+Fit again 20631 and 20382 because delta is too high 
+```{r}
+ID.current=20382
+i=which(ID==ID.current)
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  #initial parameter values
+   params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=0.3, c=as.numeric(StandardPrmIV$c[i]), r=as.numeric(StandardPrmIV$r[i]), t0=-3)#as.numeric(StandardPrmIV$t0[i]))
+   
+  #initial conditions
+   x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+  StandardFittedPrms$log10p[i]=fit0$par[1]
+  StandardFittedPrms$delta[i]=fit0$par[2]
+  StandardFittedPrms$c[i]=fit0$par[3]
+  StandardFittedPrms$r[i]=fit0$par[4]
+  StandardFittedPrms$t0[i]=fit0$par[5]
+  StandardFittedPrms$`error value`[i]=fit0$value
+  
+  i=which(StandardFittedPrms$ID==20631)
+#Data
+patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+n=nrow(vldata)
+
+#initial parameter values
+params0 <- c(log10p=as.numeric(StandardPrmIV$log10p[i]), delta=as.numeric(StandardPrmIV$delta[i]), c=as.numeric(StandardPrmIV$c[i]), 
+             r=as.numeric(StandardPrmIV$r[i]), t0=as.numeric(StandardPrmIV$t0[i]))
+
+#initial conditions
+x_init <- c(T=T.start, I=as.numeric(StandardPrmIV$c[i])*1/(10^as.numeric(StandardPrmIV$log10p[i])), V=1)
+
+#Fitting step
+fit0 <- optim(params0, sse.sir.Standard, data=vldata, time.points=c(time.points))#, 
+              #method="L-BFGS-B", lower=c(0.001, 0.001, 0.001, 0.001, -30),  upper= c(5, 5, 200, 5, 10))
+StandardFittedPrms$log10p[i]=fit0$par[1]
+StandardFittedPrms$delta[i]=fit0$par[2]
+StandardFittedPrms$c[i]=fit0$par[3]
+StandardFittedPrms$r[i]=fit0$par[4]
+StandardFittedPrms$t0[i]=fit0$par[5]
+StandardFittedPrms$`error value`[i]=fit0$value
+
+write.csv(StandardFittedPrms, file="StandardFittedPrms_5.csv")
+```
+
+```{r}
+pdf("StandardFitsRV217_5.pdf")
+
+for (i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+   
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+  
+
+  parameters=list(    
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i], 
+  t0=StandardFittedPrms$t0[i]
+  )
+  
+soln=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], max(time.points)+1, 1), Model.Standard, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(StandardFittedPrms$t0[i], max(time.points)+1), col="red",type="l", ylim=c(0, 10), xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(StandardFittedPrms$t0[i], max(time.points)+1), ylim=c(0, 10), xlab="", ylab="")
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+
+#Calculate AIC, BIC, AICc
+  StandardFittedPrms$n[i]=n
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  StandardFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  StandardFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  StandardFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  StandardFittedPrms$AICc[i]=StandardFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(StandardFittedPrms$log10p, breaks=10, xlab = "log10(p)", main="")
+hist(log10(StandardFittedPrms$delta), breaks=10, xlab = "log10(delta)", main="")
+hist(StandardFittedPrms$r, breaks=10, xlab = "r (fitted)", main="")
+hist(StandardFittedPrms$c, breaks=10, xlab = "c", main="")
+hist(StandardFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(StandardFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(StandardFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(StandardFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+SummaryStandard<-as.data.frame(matrix(data=NA, nrow=3, ncol=k))
+colnames(SummaryStandard)=c("log10p","delta", "c", "r", "t0")
+rownames(SummaryStandard)=c("mean", "median", "sd")
+
+for (j in 1:k){
+  SummaryStandard[1, j]=mean(StandardFittedPrms[, 1+j])
+  SummaryStandard[2, j]=median(StandardFittedPrms[, 1+j])
+  SummaryStandard[3, j]=sd(StandardFittedPrms[, 1+j])
+}
+
+write.csv(SummaryStandard, file="SummaryStandard_4.csv")
+
+write.csv(StandardFittedPrms, file="StandardFittedPrms_4.csv")
+
+
+beta<-c()
+
+for (i in 1:observations){
+   beta[i] <- ( (StandardFittedPrms$delta[i]+StandardFittedPrms$r[i])*(StandardFittedPrms$c[i]+StandardFittedPrms$r[i]) ) / ( 10^StandardFittedPrms$log10p[i]*T.start )
+}
+
+mean(beta)
+median(beta)
+```

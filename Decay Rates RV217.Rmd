@@ -1,0 +1,1459 @@
+---
+title: "Estimate Characteristics"
+author: "Ellie Mainou"
+date: "4/6/2021"
+output: html_document
+---
+
+Estimate decay rate
+
+for all four models: 1. Standard 2. DDDI 3. Macro 4. MacroDDDI
+
+For growth rate: run the model. Use the model-derived viral load measurements for the times that were used as growth data points. Note: disregard the last one--because in many cases you have already reached decay 
+```{r}
+set.seed(1234)
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+```{r}
+#Import modified dataset and make sure that it reads as numbers
+NewAcuteData <- read_csv("HIV R files/Acute Infection Models/RV217ForModels4.csv")#use that and not the latest version, because I re-categorized some growth and decay data points. This does not affect the decay that should be derived for the model (the model fit does not change), but it would change how points are picked to calculate the decay. So keep the old version. 
+StandardFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_5.csv")
+DDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_4.csv")
+MacroFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_4.csv")
+MacroDDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_3.csv")
+
+PrmErrorMatrixRV217_6 <- read_csv("HIV R files/RV217 Data Analysis /PrmErrorMatrixRV217_6.csv")
+Peak_RV217_6 <- read_csv("HIV R files/RV217 Data Analysis /Peak_RV217_6.csv")
+
+
+RV217_ModelCategories <- read_excel("HIV R files/Acute Infection Models/Model Comparison/RV217_ModelCategories.xlsx")
+```
+
+
+```{r}
+ID<-unique(NewAcuteData$ID)  #participant IDs
+observations= length(ID)
+
+
+# Model Equations
+Hstart=1e6
+b=0.01
+d=0.01
+T.start=1e6
+
+Model.Standard <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( (delta+r)*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+} 
+
+Model.DDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( r*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I^(gamma+1)
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+}
+
+Model.Macro <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+    beta=(r+eta)*(r+alpha+b)/Hstart/(10^log10lambda-r-alpha-b)
+    dH <- b*Hstart - b*H - alpha*P 
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - alpha*P - alpha*(1+k)/k*P^2/H 
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+Model.MacroDDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+  if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+  }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+  }    
+    dH <- b*Hstart - b*H -  alpha^(gamma+1)*(P^(gamma+1))/H^(gamma+1-1)
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - (alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+}
+```
+
+```{r}
+# Matrices with growth, peak, decay, setpoint and squared errors among models 
+names<-c("ID", "DecayRate", "Standard", "SQ_Standard", "DDDI", "SQ_DDDI", "Macro", "SQ_Macro", "MacroDDDI", "SQ_MacroDDDI",  "Model")
+CompareDecay<-as.data.frame(matrix(data=NA, nrow=observations, ncol=length(names)))
+colnames(CompareDecay)<-names
+CompareDecay$ID<-ID
+
+names<-c("ID", "Standard", "DDDI", "Macro", "MacroDDDI", "Model")
+InterceptDecay<-as.data.frame(matrix(data=NA, nrow=observations, ncol=length(names)))
+colnames(InterceptDecay)<-names
+InterceptDecay$ID<-ID
+```
+
+
+```{r}
+#Round t0 to the first decimal place
+StandardFittedPrms$t0<-round(StandardFittedPrms$t0, 0)
+DDDIFittedPrms$t0<-round(DDDIFittedPrms$t0, 0)
+MacroFittedPrms$t0<-round(MacroFittedPrms$t0, 0)
+MacroDDDIFittedPrms$t0<-round(MacroDDDIFittedPrms$t0, 0)
+
+```
+
+```{r}
+#remove participant  20382 i=21; 40491, i=49
+for (i in seq(1, observations, 1)[-c(13, 21, 49)]){
+
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 100, 1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#Decay rate
+if(!is.na(PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])])){
+CompareDecay$DecayRate[i]<- PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])] 
+
+#Standard
+pts_Standard<-which(Categories$Category_Standard=="d")
+time_Standard<-as.numeric(Categories$days[pts_Standard])
+vl_Standard<-log10(soln.Standard$V[abs(StandardFittedPrms$t0[i])+1+time_Standard])
+
+Decay_Standard=lm(vl_Standard~time_Standard)
+
+CompareDecay$Standard[i]=Decay_Standard$coefficients[2]
+InterceptDecay$Standard[i]=Decay_Standard$coefficients[1]
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(Categories$days[pts_DDDI])
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(Categories$days[pts_Macro])
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(Categories$days[pts_MacroDDDI])
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+
+#Find which model predicts decay rate better
+x0<-(CompareDecay$DecayRate[i]-CompareDecay$Standard[i])^2
+CompareDecay$SQ_Standard[i]<-x0
+x1<-(CompareDecay$DecayRate[i]-CompareDecay$DDDI[i])^2
+CompareDecay$SQ_DDDI[i]<-x1
+x2<-(CompareDecay$DecayRate[i]-CompareDecay$Macro[i])^2
+CompareDecay$SQ_Macro[i]<-x2
+x3<-(CompareDecay$DecayRate[i]-CompareDecay$MacroDDDI[i])^2
+CompareDecay$SQ_MacroDDDI[i]<-x3
+
+if( min(x0, x1, x2,x3)==x0){
+  CompareDecay$Model[i]<-"Standard"
+  }else if ( min(x0, x1, x2,x3)==x1){
+      CompareDecay$Model[i]<-"Macro"
+    }else if ( min(x0, x1, x2,x3)==x2){
+      CompareDecay$Model[i]<-"DDDI"
+    }else if ( min(x0, x1, x2,x3)==x3){
+      CompareDecay$Model[i]<-"MacroDDDI"
+    }
+}
+}
+write.csv(CompareDecay, file="CompareDecay.csv")
+write.csv(InterceptDecay, file="InterceptDecay.csv")
+```
+
+There are some for which this the line is not very tangent to the curve. I re-derive the decay rate
+
+```{r}
+#10374: Standard-- -1 from first point + all other ones 
+i=which(ID==10374)
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 100, 1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#Standard
+pts_Standard<-which(Categories$Category_Standard=="d")
+time_Standard<-as.numeric(c(Categories$days[pts_Standard[1]]-3, Categories$days[pts_Standard[length(pts_Standard)]]))
+vl_Standard<-log10(soln.Standard$V[abs(StandardFittedPrms$t0[i])+1+time_Standard])
+
+Decay_Standard=lm(vl_Standard~time_Standard)
+
+CompareDecay$Standard[i]=Decay_Standard$coefficients[2]
+InterceptDecay$Standard[i]=Decay_Standard$coefficients[1]
+```
+
+```{r}
+#10066, 40363: DDDI-- +2 from first point + all other ones 
+x<-c(10066, 40363)
+for (j in x){
+i=which(ID==j)
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  
+  #DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]]+2, Categories$days[pts_DDDI[length(pts_DDDI)]]))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+}
+
+# 20263: DDDI-- -3 from first point + all other ones 
+i=which(ID==20263)
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  #DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]]-2, Categories$days[pts_DDDI[length(pts_DDDI)]]-2))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+
+
+#20225
+i=which(ID==20225)
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  #DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]], Categories$days[pts_DDDI[length(pts_DDDI)]]-1))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+
+#40168
+i=which(ID==40168)
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  #DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]], Categories$days[pts_DDDI[length(pts_DDDI)]]-3))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+
+
+#10374
+i=which(ID==10374)
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+)
+
+soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]]-7, 
+                        Categories$days[pts_DDDI[length(pts_DDDI)]]-3))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+
+
+
+i=which(ID==20507)
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+  
+  #DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]+2], Categories$days[pts_DDDI[length(pts_DDDI-1)]]-1))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+
+i=which(ID==40265)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+)
+
+soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#DDDI
+pts_DDDI<-which(Categories$Category_DDDI=="d")
+time_DDDI<-as.numeric(c(Categories$days[pts_DDDI[1]]+3, 
+                        Categories$days[pts_DDDI[length(pts_DDDI)]]))
+vl_DDDI<-log10(soln.DDDI$V[abs(DDDIFittedPrms$t0[i])+1+time_DDDI])
+
+Decay_DDDI=lm(vl_DDDI~time_DDDI)
+
+CompareDecay$DDDI[i]=Decay_DDDI$coefficients[2]
+InterceptDecay$DDDI[i]=Decay_DDDI$coefficients[1]
+```
+
+```{r}
+x<-c(10739, 10428, 10742, 20245, 40257)
+for(j in x){
+  i=which(ID==j)
+#Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+  Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+  
+  
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]]-1, Categories$days[pts_Macro[length(pts_Macro)]]-3))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+}
+
+i=which(ID==10204)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+)
+
+soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]]-2, 
+                         Categories$days[pts_Macro[length(pts_Macro)]]))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+
+i=which(ID==20502)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+)
+
+soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]]+1, 
+                         Categories$days[pts_Macro[length(pts_Macro)]]-2))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+
+x<-c(10220, 40168)
+for (j in x){
+i=which(ID==j)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+)
+
+soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]], 
+                         Categories$days[pts_Macro[length(pts_Macro)]]-2))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+}
+
+
+i=which(ID==40512)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+)
+
+soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]]-4, 
+                         Categories$days[pts_Macro[length(pts_Macro)]]-2))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+
+i=which(ID==40646)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+)
+
+soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]]-1, 
+                         Categories$days[pts_Macro[length(pts_Macro)]]-1))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+
+
+i=which(ID==40100)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#Run ODES
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+)
+
+soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+#Macro
+pts_Macro<-which(Categories$Category_Macro=="d")
+time_Macro<-as.numeric(c(Categories$days[pts_Macro[1]]+1, 
+                         Categories$days[pts_Macro[length(pts_Macro)]]-1))
+vl_Macro<-log10(soln.Macro$V[abs(MacroFittedPrms$t0[i])+1+time_Macro])
+
+Decay_Macro=lm(vl_Macro~time_Macro)
+
+CompareDecay$Macro[i]=Decay_Macro$coefficients[2]
+InterceptDecay$Macro[i]=Decay_Macro$coefficients[1]
+```
+
+MacroDDDI
+
+```{r}
+i=which(ID==10204) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-20, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-19))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+
+i=which(ID==10220) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-2, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]-1]))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+i=which(ID==20225) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-1, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-4))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+i=which(ID==20263) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-3, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-2))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+i=which(ID==20368) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]], 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-2))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+
+i=which(ID==20442) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-1, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+
+i=which(ID==20502) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]], 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-3))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+i=which(ID==21006) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-2, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+
+i=which(ID==40257) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-1, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-4))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+
+i=which(ID==40283) 
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-6, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-4))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+i=which(ID==40646)
+#Data
+patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+time.points<-patient.current$days
+log10vl<-patient.current$log10VL
+vldata <- data.frame(time.points,log10vl)
+
+Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+#MacroDDDI
+init.cond=c(H=Hstart, V=1, P=0)
+
+parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+)
+
+soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#MacroDDDI
+pts_MacroDDDI<-which(Categories$Category_MacroDDDI=="d")
+time_MacroDDDI<-as.numeric(c(Categories$days[pts_MacroDDDI[1]]-2, 
+                             Categories$days[pts_MacroDDDI[length(pts_DDDI)]]-3))
+vl_MacroDDDI<-log10(soln.MacroDDDI$V[abs(MacroDDDIFittedPrms$t0[i])+1+time_MacroDDDI])
+
+Decay_MacroDDDI=lm(vl_MacroDDDI~time_MacroDDDI)
+
+CompareDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[2]
+InterceptDecay$MacroDDDI[i]=Decay_MacroDDDI$coefficients[1]
+
+write.csv(CompareDecay, file="CompareDecay.csv")
+write.csv(InterceptDecay, file="InterceptDecay.csv")
+```
+
+
+Plot data and decay rates 
+```{r}
+pdf("DecayRatesRV217.pdf")
+
+for (i in seq(1, observations, 1)[-c(13, 21, 49)]){
+  
+  if(!is.na(PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])])){
+
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  
+ Categories<-RV217_ModelCategories[which(RV217_ModelCategories$`Subject ID`==ID[i]), ]
+
+
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 100, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 100, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 100, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 100, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+#Standard
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Staff", main = bquote(ID == .(ID.current)))
+#model-derived decay line
+abline(a=InterceptDecay$Standard[i], b=CompareDecay$Standard[i], col="red")
+#data-derived decay line
+abline(a=PrmErrorMatrixRV217_6$B[which(PrmErrorMatrixRV217_6$ID==ID[i])], b=PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+
+##DDDI
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Hol", main = bquote(ID == .(ID.current)))
+#model-derived decay line
+abline(a=InterceptDecay$DDDI[i], b=CompareDecay$DDDI[i], col="red")
+#data-derived decay line
+abline(a=PrmErrorMatrixRV217_6$B[which(PrmErrorMatrixRV217_6$ID==ID[i])], b=PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+ 
+##Macro
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-Koel", main = bquote(ID == .(ID.current)))
+#model-derived decay line
+abline(a=InterceptDecay$Macro[i], b=CompareDecay$Macro[i], col="red")
+#data-derived decay line
+abline(a=PrmErrorMatrixRV217_6$B[which(PrmErrorMatrixRV217_6$ID==ID[i])], b=PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+
+##MacroDDDI
+#all data
+plot(vldata$time.points, vldata$log10vl, col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="Time (days)", ylab="")
+par(new=TRUE)
+#model-derived curve
+plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="red",type="l", lwd=2,  xlab="Time (days)", ylab="log10 viral load-KoelD", main = bquote(ID == .(ID.current)))
+#model-derived decay line
+abline(a=InterceptDecay$MacroDDDI[i], b=CompareDecay$MacroDDDI[i], col="red")
+#data-derived decay line
+abline(a=PrmErrorMatrixRV217_6$B[which(PrmErrorMatrixRV217_6$ID==ID[i])], b=PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])], col="black")
+legend("topright", legend=c("Model", "Model-derived", "Data-derived"), col=c("black", "red", "black"), lty=1, cex=0.9 )
+}
+}
+
+dev.off()
+```
+
+
+
+```{r}
+#remove participant 20178, i=13;  20382, i=21; 40491, i=49
+for (i in seq(1, observations, 1)[-c(13, 21, 49)]){
+
+#Decay rate
+if(!is.na(PrmErrorMatrixRV217_6$d[which(PrmErrorMatrixRV217_6$ID==ID[i])])){
+
+#Find which model predicts decay rate better
+x0<-(CompareDecay$DecayRate[i]-CompareDecay$Standard[i])^2
+CompareDecay$SQ_Standard[i]<-x0
+x1<-(CompareDecay$DecayRate[i]-CompareDecay$DDDI[i])^2
+CompareDecay$SQ_DDDI[i]<-x1
+x2<-(CompareDecay$DecayRate[i]-CompareDecay$Macro[i])^2
+CompareDecay$SQ_Macro[i]<-x2
+x3<-(CompareDecay$DecayRate[i]-CompareDecay$MacroDDDI[i])^2
+CompareDecay$SQ_MacroDDDI[i]<-x3
+
+if( min(x0, x1, x2,x3)==x0){
+  CompareDecay$Model[i]<-"Standard"
+  }else if ( min(x0, x1, x2,x3)==x1){
+      CompareDecay$Model[i]<-"Macro"
+    }else if ( min(x0, x1, x2,x3)==x2){
+      CompareDecay$Model[i]<-"DDDI"
+    }else if ( min(x0, x1, x2,x3)==x3){
+      CompareDecay$Model[i]<-"MacroDDDI"
+    }
+}
+}
+write.csv(CompareDecay, file="CompareDecay.csv")
+write.csv(InterceptDecay, file="InterceptDecay.csv")
+```

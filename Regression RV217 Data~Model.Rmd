@@ -1,0 +1,451 @@
+---
+title: "Regression New Data"
+author: "Ellie Mainou"
+date: "3/30/2021"
+output: html_document
+---
+
+```{r}
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+
+```{r}
+#Import modified dataset and make sure that it reads as numbers
+NewAcuteData <- read_csv("HIV R files/Acute Infection Models/RV217ForModels5.csv")
+CompareGrowth <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareGrowth.csv"))
+CompareGrowth<-CompareGrowth[, -1]
+ComparePeakM <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Comparison/ComparePeakM.csv"))
+ComparePeakM<-ComparePeakM[, -1]
+ComparePeakT <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Comparison/ComparePeakT.csv"))
+ComparePeakT<-ComparePeakT[, -1]
+CompareDecay <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareDecay.csv"))
+CompareDecay<-CompareDecay[,-1]
+CompareSetpoint <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Comparison/CompareSetpoint.csv"))
+CompareSetpoint<-CompareSetpoint[, -1]
+
+ComparePeakJ <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Comparison/ComparePeakJ_3.csv"))
+ComparePeakJ<-ComparePeakJ[, -1]
+```
+
+```{r}
+ID<-unique(NewAcuteData$ID)  #participant IDs
+observations= length(ID)
+```
+
+
+
+```{r}
+#Growth
+plot(CompareGrowth$Standard, CompareGrowth$GrowthRate, col="blue", pch=19, xlim=c(0, 1), ylim=c(0, 1), xlab="Model-derived growth rate", ylab="Data-derived growth rate")
+par(new=TRUE)
+plot(CompareGrowth$DDDI, CompareGrowth$GrowthRate,  col="cyan", pch=19, xlim=c(0, 1), ylim=c(0, 1), xlab="", ylab="")
+par(new=TRUE)
+plot(CompareGrowth$Macro, CompareGrowth$GrowthRate, col="red", pch=19, xlim=c(0, 1), ylim=c(0, 1), xlab="", ylab="")
+par(new=TRUE)
+plot(CompareGrowth$MacroDDDI, CompareGrowth$GrowthRate,  col="darkorange", pch=20, xlim=c(0, 1), ylim=c(0, 1), xlab="", ylab="")
+legend("topright", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI"), col=c("blue", "cyan", "red", "darkorange"), pch=19, cex=0.6)
+
+#PeakM
+plot(ComparePeakM$Standard, ComparePeakM$PeakM,  col="blue", pch=19, xlim=c(4, 9), ylim=c(4, 9), xlab="Model-derived peak viral load", ylab="Data-derived peak viral load")
+par(new=TRUE)
+plot(ComparePeakM$DDDI, ComparePeakM$PeakM, col="cyan", pch=19, xlim=c(4, 9), ylim=c(4, 9), xlab="", ylab="")
+par(new=TRUE)
+plot(ComparePeakM$Macro, ComparePeakM$PeakM, col="red", pch=19, xlim=c(4, 9), ylim=c(4, 9), xlab="", ylab="")
+par(new=TRUE)
+plot(ComparePeakM$MacroDDDI, ComparePeakM$PeakM, col="darkorange", pch=20, xlim=c(4, 9), ylim=c(4, 9), xlab="", ylab="")
+legend("bottomright", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI"), col=c("blue", "cyan", "red", "darkorange"), pch=19, cex=0.8 )
+
+#PeakT
+plot(ComparePeakT$Standard, ComparePeakT$PeakT, col="blue", pch=19, xlim=c(0, 25), ylim=c(0, 25), xlab="Model-derived peak time", ylab="Data-derived peak time")
+par(new=TRUE)
+plot(ComparePeakT$DDDI, ComparePeakT$PeakT, col="cyan", pch=19, xlim=c(0, 25), ylim=c(0, 25), xlab="", ylab="")
+par(new=TRUE)
+plot(ComparePeakT$Macro, ComparePeakT$PeakT, col="red", pch=19, xlim=c(0, 25), ylim=c(0, 25), xlab="", ylab="")
+par(new=TRUE)
+plot(ComparePeakT$MacroDDDI, ComparePeakT$PeakT, col="darkorange", pch=20, xlim=c(0, 25), ylim=c(0, 25), xlab="", ylab="")
+legend("topleft", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI"), col=c("blue", "cyan", "red", "darkorange"), pch=19, cex=0.8 )
+
+
+#Peak joint-- normalized by mean PeakJ_3
+plot(ComparePeakJ$Standard, ComparePeakJ$PeakJ, col="blue", pch=19, xlim=c(1, 3), ylim=c(1, 3), xlab="Mode-derived joint peak", ylab="Data-derived joint peak")
+par(new=TRUE)
+plot(ComparePeakJ$DDDI, ComparePeakJ$PeakJ, col="cyan", pch=19, xlim=c(1, 3), ylim=c(1, 3), xlab="", ylab="")
+par(new=TRUE)
+plot(ComparePeakJ$Macro, ComparePeakJ$PeakJ, col="red", pch=19, xlim=c(1, 3), ylim=c(1, 3), xlab="", ylab="")
+par(new=TRUE)
+plot(ComparePeakJ$MacroDDDI, ComparePeakJ$PeakJ, col="darkorange", pch=20, xlim=c(1, 3), ylim=c(1, 3), xlab="", ylab="")
+legend("topleft", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI"), col=c("blue", "cyan", "red", "darkorange"), pch=19, cex=0.8 )
+
+
+#Decay 
+plot(abs(CompareDecay$Standard), abs(CompareDecay$DecayRate), col="blue", pch=19, xlim=c(0, 0.4), ylim=c(0, 0.4), xlab="Model-derived decay rate", ylab="Data-derived decay rate")
+par(new=TRUE)
+plot(abs(CompareDecay$DDDI), abs(CompareDecay$DecayRate), col="cyan", pch=19,  xlim=c(0, 0.4), ylim=c(0, 0.4), xlab="", ylab="")
+par(new=TRUE)
+plot(abs(CompareDecay$Macro), abs(CompareDecay$DecayRate), col="red", pch=19,  xlim=c(0, 0.4), ylim=c(0, 0.4), xlab="", ylab="")
+par(new=TRUE)
+plot(abs(CompareDecay$MacroDDDI), abs(CompareDecay$DecayRate), col="darkorange", pch=20,  xlim=c(0, 0.4), ylim=c(0, 0.4),xlab="", ylab="")
+legend("topleft", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI"), col=c("blue", "cyan", "red", "darkorange"), pch=19, cex=0.8 )
+
+#Setpoint
+plot(abs(CompareSetpoint$Standard), abs(CompareSetpoint$Setpoint), col="blue", pch=19, xlim=c(3, 7), ylim=c(3, 7), xlab="Model-derived decay rate", ylab="Data-derived decay rate")
+par(new=TRUE)
+plot(abs(CompareSetpoint$DDDI), abs(CompareSetpoint$Setpoint), col="cyan", pch=18,  xlim=c(3, 7), ylim=c(3, 7), xlab="", ylab="")
+par(new=TRUE)
+plot(abs(CompareSetpoint$Macro), abs(CompareSetpoint$Setpoint), col="red", pch=17,  xlim=c(3, 7), ylim=c(3, 7), xlab="", ylab="")
+par(new=TRUE)
+plot(abs(CompareSetpoint$MacroDDDI), abs(CompareSetpoint$Setpoint), col="darkorange", pch=8,  xlim=c(3, 7), ylim=c(3, 7),xlab="", ylab="")
+legend("topleft", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI"), col=c("blue", "cyan", "red", "darkorange"), pch=19, cex=0.8 )
+```
+
+#Linear Models 
+
+```{r}
+models<-c("Standard", "DDDI", "Macro", "MacroDDDI")
+names<-c("intercept",  "coeff") #"pvalue_intercept", "pvalue_coeff", "Adjusted_Rsquared")
+LinearModel_Growth<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+LinearModel_PeakM<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+LinearModel_PeakT<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+LinearModel_PeakJ<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+LinearModel_PeakJ_3<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+LinearModel_Decay<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+LinearModel_Setpoint<-as.data.frame(matrix(data=NA, nrow=length(models), ncol=length(names)))
+
+colnames(LinearModel_Growth)<-colnames(LinearModel_PeakM)<-colnames(LinearModel_PeakT)<-colnames(LinearModel_PeakJ)<-colnames(LinearModel_PeakJ_3)<-colnames(LinearModel_Decay)<-colnames(LinearModel_Setpoint)<-names
+rownames(LinearModel_Growth)<-rownames(LinearModel_PeakM)<-rownames(LinearModel_PeakT)<-rownames(LinearModel_PeakJ)<-rownames(LinearModel_PeakJ_3)<-rownames(LinearModel_Decay)<-rownames(LinearModel_Setpoint)<-models
+
+#lm (y~x)
+
+for (i in 1:length(models)){
+  lm.model=lm(CompareGrowth$GrowthRate~as.numeric(t(CompareGrowth[ , (2*(i-1)+3)])))
+  LinearModel_Growth$intercept[i]=lm.model$coefficients[1]
+  LinearModel_Growth$coeff[i]=lm.model$coefficients[2]
+}
+
+for (i in 1:length(models)){
+  lm.model=lm(ComparePeakM$PeakM~as.numeric(t(ComparePeakM[ , (2*(i-1)+3)])))
+  LinearModel_PeakM$intercept[i]=lm.model$coefficients[1]
+  LinearModel_PeakM$coeff[i]=lm.model$coefficients[2]
+}
+
+for (i in 1:length(models)){
+  lm.model=lm(ComparePeakT$PeakT~as.numeric(t(ComparePeakT[ , (2*(i-1)+3)])))
+  LinearModel_PeakT$intercept[i]=lm.model$coefficients[1]
+  LinearModel_PeakT$coeff[i]=lm.model$coefficients[2]
+}
+
+for (i in 1:length(models)){
+  lm.model=lm(ComparePeakJ$PeakJ~as.numeric(t(ComparePeakJ[ , (2*(i-1)+3)])))
+  LinearModel_PeakJ_3$intercept[i]=lm.model$coefficients[1]
+  LinearModel_PeakJ_3$coeff[i]=lm.model$coefficients[2]
+}
+
+
+for (i in 1:length(models)){
+  lm.model=lm(CompareDecay$DecayRate~as.numeric(t(CompareDecay[ , (2*(i-1)+3)])))
+  LinearModel_Decay$intercept[i]=lm.model$coefficients[1]
+  LinearModel_Decay$coeff[i]=lm.model$coefficients[2]
+}
+
+for (i in 1:length(models)){
+  lm.model=lm(CompareSetpoint$Setpoint~as.numeric(t(CompareSetpoint[ , (2*(i-1)+3)])))
+  LinearModel_Setpoint$intercept[i]=lm.model$coefficients[1]
+  LinearModel_Setpoint$coeff[i]=lm.model$coefficients[2]
+}
+
+
+write.csv(LinearModel_Growth, file="LinearModel_Growth.csv")
+write.csv(LinearModel_PeakM, file="LinearModel_PeakM.csv")
+write.csv(LinearModel_PeakT, file="LinearModel_PeakT.csv")
+write.csv(LinearModel_PeakJ_3, file="LinearModel_PeakJ_3.csv")
+write.csv(LinearModel_Decay, file="LinearModel_Decay.csv")
+write.csv(LinearModel_Setpoint, file="LinearModel_Setpoint.csv")
+
+LinearModel_Growth
+LinearModel_PeakM
+LinearModel_PeakT
+LinearModel_PeakJ_3
+LinearModel_Decay
+LinearModel_Setpoint
+
+
+```
+
+```{r}
+pdf("Regressions.pdf")
+par(mfrow=c(2,3))
+#Growth Rate
+plot(CompareGrowth$Standard, CompareGrowth$GrowthRate, col="blue", pch=19, xlim=c(0, 1), ylim=c(0, 1), xlab="Model-derived growth rate", ylab="Data-derived growth rate", cex.lab = 1.7)
+abline(LinearModel_Growth$intercept[1], LinearModel_Growth$coeff[1], col="blue")
+par(new=TRUE)
+plot(CompareGrowth$DDDI, CompareGrowth$GrowthRate, col="purple", pch=3, lwd=2, xlim=c(0, 1), ylim=c(0, 1), xlab="", ylab="")
+abline(LinearModel_Growth$intercept[2], LinearModel_Growth$coeff[2], col="purple")
+par(new=TRUE)
+plot(CompareGrowth$Macro, CompareGrowth$GrowthRate, col="red", pch=15, xlim=c(0, 1), ylim=c(0, 1), xlab="", ylab="")
+abline(LinearModel_Growth$intercept[3], LinearModel_Growth$coeff[3], col="red")
+par(new=TRUE)
+plot(CompareGrowth$MacroDDDI, CompareGrowth$GrowthRate, col="darkorange", pch=17, xlim=c(0, 1), ylim=c(0, 1), xlab="", ylab="")
+abline(LinearModel_Growth$intercept[4], LinearModel_Growth$coeff[4], col="darkorange")
+abline(a=0, b=1, lty=2, col="black")
+#legend("bottomright", legend=c( "Standard", "DDDI", "Macro", "MacroDDDI", "y=x"), col=c("blue", "cyan", "red", "darkorange", "black"), pch=c(rep(19, 4), NA), lty= c(rep(NA, 4), 2), cex=0.8 )
+
+#PeakM
+plot(ComparePeakM$Standard, ComparePeakM$PeakM, col="blue", pch=19, xlim=c(4, 9), ylim=c(4, 9), xlab="Model-derived peak", ylab="Data-derived peak", cex.lab = 1.7)
+abline(LinearModel_PeakM$intercept[1], LinearModel_PeakM$coeff[1], col="blue")
+par(new=TRUE)
+plot(ComparePeakM$DDDI, ComparePeakM$PeakM, col="purple", pch=3, lwd=2, xlim=c(4, 9), ylim=c(4, 9), xlab="", ylab="")
+abline(LinearModel_PeakM$intercept[2], LinearModel_PeakM$coeff[2], col="purple")
+par(new=TRUE)
+plot(ComparePeakM$Macro, ComparePeakM$PeakM, col="red", pch=15, xlim=c(4, 9), ylim=c(4, 9), xlab="", ylab="")
+abline(LinearModel_PeakM$intercept[3], LinearModel_PeakM$coeff[3], col="red")
+par(new=TRUE)
+plot(ComparePeakM$MacroDDDI, ComparePeakM$PeakM, col="darkorange", pch=17, xlim=c(4, 9), ylim=c(4, 9), xlab="", ylab="")
+abline(LinearModel_PeakM$intercept[4], LinearModel_PeakM$coeff[4], col="darkorange")
+abline(a=0, b=1, lty=2, col="black")
+#legend("bottomright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI", "y=x"), col=c("blue", "cyan", "red", "darkorange", "black"), pch=c(rep(19, 4), NA), lty= c(rep(NA, 4), 2), cex=0.8 )
+
+#PeakT
+plot(ComparePeakT$Standard, ComparePeakT$PeakT, col="blue", pch=19, xlim=c(0, 25), ylim=c(0, 25), xlab="Model-derived peak time", ylab="Data-derived peak time", cex.lab = 1.7)
+abline(LinearModel_PeakT$intercept[1], LinearModel_PeakT$coeff[1], col="blue")
+par(new=TRUE)
+plot(ComparePeakT$DDDI, ComparePeakT$PeakT, col="purple", pch=3, lwd=2, xlim=c(0, 25), ylim=c(0, 25), xlab="", ylab="")
+abline(LinearModel_PeakT$intercept[2], LinearModel_PeakT$coeff[2], col="purple")
+par(new=TRUE)
+plot(ComparePeakT$Macro, ComparePeakT$PeakT, col="red", pch=15, xlim=c(0, 25), ylim=c(0, 25), xlab="", ylab="")
+abline(LinearModel_PeakT$intercept[3], LinearModel_PeakT$coeff[3], col="red")
+par(new=TRUE)
+plot(ComparePeakT$MacroDDDI, ComparePeakT$PeakT, col="darkorange", pch=17, xlim=c(0, 25), ylim=c(0, 25), xlab="", ylab="")
+abline(LinearModel_PeakT$intercept[4], LinearModel_PeakT$coeff[4], col="darkorange")
+abline(a=0, b=1, lty=2, col="black")
+#legend("bottomright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI", "y=x"), col=c("blue", "cyan", "red", "darkorange", "black"), pch=c(rep(19, 4), NA), lty= c(rep(NA, 4), 2), cex=0.8 )
+
+
+#Peak joint_3
+plot(ComparePeakJ$Standard, ComparePeakJ$PeakJ, col="blue", pch=19, xlim=c(1, 3), ylim=c(1, 3), ylab="Data-derived joint peak", xlab="Model-derived joint peak", cex.lab = 1.7)
+abline(LinearModel_PeakJ_3$intercept[1], LinearModel_PeakJ_3$coeff[1], col="blue")
+par(new=TRUE)
+plot(ComparePeakJ$DDDI, ComparePeakJ$PeakJ, col="purple", pch=3, lwd=2, xlim=c(1, 3), ylim=c(1, 3), xlab="", ylab="")
+abline(LinearModel_PeakJ_3$intercept[2], LinearModel_PeakJ_3$coeff[2], col="purple")
+par(new=TRUE)
+plot(ComparePeakJ$Macro, ComparePeakJ$PeakJ, col="red", pch=15, xlim=c(1, 3), ylim=c(1, 3), xlab="", ylab="")
+abline(LinearModel_PeakJ_3$intercept[3], LinearModel_PeakJ_3$coeff[3], col="red")
+par(new=TRUE)
+plot(ComparePeakJ$MacroDDDI, ComparePeakJ$PeakJ, col="darkorange", pch=17, xlim=c(1, 3), ylim=c(1, 3), xlab="", ylab="")
+abline(LinearModel_PeakJ_3$intercept[4], LinearModel_PeakJ_3$coeff[4], col="darkorange")
+abline(a=0, b=1, lty=2, col="black")
+#legend("bottomright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI", "y=x"), col=c("blue", "cyan", "red", "darkorange", "black"), pch=c(rep(19, 4), NA), lty= c(rep(NA, 4), 2), cex=0.8 )
+
+#Decay
+plot(CompareDecay$Standard, CompareDecay$DecayRate, col="blue", pch=19, xlim=c(-0.5, 0), ylim=c(-0.5, 0), xlab="Model-derived decay rate", ylab="Data-derived decay rate", cex.lab = 1.7)
+abline(LinearModel_Decay$intercept[1], LinearModel_Decay$coeff[1], col="blue")
+par(new=TRUE)
+plot(CompareDecay$DDDI, CompareDecay$DecayRate, col="purple", pch=3, lwd=2, xlim=c(-0.5, 0), ylim=c(-0.5, 0), xlab="", ylab="")
+abline(LinearModel_Decay$intercept[2], LinearModel_Decay$coeff[2], col="purple")
+par(new=TRUE)
+plot(CompareDecay$Macro, CompareDecay$DecayRate, col="red", pch=15,  xlim=c(-0.5, 0), ylim=c(-0.5, 0),xlab="", ylab="")
+abline(LinearModel_Decay$intercept[3], LinearModel_Decay$coeff[3], col="red")
+par(new=TRUE)
+plot(CompareDecay$MacroDDDI, CompareDecay$DecayRate, col="darkorange", pch=17, xlim=c(-0.5, 0), ylim=c(-0.5, 0), xlab="", ylab="")
+abline(LinearModel_Decay$intercept[4], LinearModel_Decay$coeff[4], col="darkorange")
+abline(a=0, b=1, lty=2, col="black")
+# legend("bottomright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI", "y=x"), col=c("blue", "cyan", "red", "darkorange", "black"), pch=c(rep(19, 4), NA), lty= c(rep(NA, 4), 2), cex=0.8 )
+
+
+#Setpoint
+plot(CompareSetpoint$Standard, CompareSetpoint$Setpoint, col="blue", pch=19, xlim=c(3, 7), ylim=c(3, 7), xlab="Model-derived setpoint", ylab="Data-derived setpoint", cex.lab = 1.7)
+abline(LinearModel_Setpoint$intercept[1], LinearModel_Setpoint$coeff[1], col="blue")
+par(new=TRUE)
+plot(CompareSetpoint$DDDI, CompareSetpoint$Setpoint, col="purple", pch=3, lwd=2, xlim=c(3, 7), ylim=c(3, 7), xlab="", ylab="")
+abline(LinearModel_Setpoint$intercept[2], LinearModel_Setpoint$coeff[2], col="purple")
+par(new=TRUE)
+plot(CompareSetpoint$Macro, CompareSetpoint$Setpoint, col="red", pch=15, xlim=c(3, 7), ylim=c(3, 7), xlab="", ylab="")
+abline(LinearModel_Setpoint$intercept[3], LinearModel_Setpoint$coeff[3], col="red")
+par(new=TRUE)
+plot(CompareSetpoint$MacroDDDI, CompareSetpoint$Setpoint, col="darkorange", pch=17, xlim=c(3, 7), ylim=c(3, 7), xlab="", ylab="")
+abline(LinearModel_Setpoint$intercept[4], LinearModel_Setpoint$coeff[4], col="darkorange")
+abline(a=0, b=1, lty=2, col="black")
+# legend("bottomright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI", "y=x"), col=c("blue", "cyan", "red", "darkorange", "black"), pch=c(rep(19, 4), NA), lty= c(rep(NA, 4), 2), cex=0.8 )
+legend("topleft", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI", "y=x"), col=c("blue", "purple", "red", "darkorange", "black"), pch=c(19, 3, 15, 17, NA), lty= c(rep(NA, 4), 2), cex=0.9 )
+dev.off()
+
+```
+
+
+```{r}
+#Growth
+lm.model<-lm(CompareGrowth$GrowthRate~CompareGrowth$Standard)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareGrowth$Standard[which(CompareGrowth$Standard!="NA")], t(res), xlab="Growth Rate Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+tvalue= (0.29269-0)/0.10460
+pvalue=2*(1-pt(tvalue, df=41, lower.tail=TRUE))
+pvalue
+pvalue=2*pt(tvalue, df=41, lower.tail=FALSE)
+pvalue
+
+tvalue= (0.29269-0)/0.10460
+pvalue=2*(1-pt(tvalue, df=41, lower.tail=FALSE))
+pvalue
+
+
+lm.model<-lm(CompareGrowth$GrowthRate~CompareGrowth$DDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareGrowth$DDDI[which(CompareGrowth$DDDI!="NA")], t(res), xlab="Growth Rate Prediction", ylab="Residuals", main="DDDI")
+abline(a=0, b=0)
+
+tvalue= (0.70830-0)/0.11427
+pvalue=2*(1-pt(tvalue, df=41, lower.tail=TRUE))
+pvalue
+
+lm.model<lm(CompareGrowth$GrowthRate~CompareGrowth$Macro)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareGrowth$Macro[which(CompareGrowth$Macro!="NA")], t(res), xlab="Growth Rate Prediction", ylab="Residuals", main="Macro")
+abline(a=0, b=0)
+
+lm.model<-lm(lm(CompareGrowth$GrowthRate~CompareGrowth$MacroDDDI))
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareGrowth$MacroDDDI[which(CompareGrowth$MacroDDDI!="NA")], t(res), xlab="Growth Rate Prediction", ylab="Residuals", main="MacroDDDI")
+abline(a=0, b=0)
+
+#Peak M
+lm.model<-lm(ComparePeakM$PeakM~ComparePeakM$Standard)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakM$Standard[which(ComparePeakM$Standard!="NA")], t(res), xlab="Peak Magnitude Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+lm.model<-lm(ComparePeakM$PeakM~ComparePeakM$DDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakM$DDDI[which(ComparePeakM$DDDI!="NA")], t(res), xlab="Peak Magnitude Prediction", ylab="Residuals", main="DDDI")
+abline(a=0, b=0)
+
+
+lm.model<-lm(ComparePeakM$PeakM~ComparePeakM$Macro)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakM$Macro[which(ComparePeakM$Macro!="NA")], t(res), xlab="Peak Magnitude Prediction", ylab="Residuals", main="Macro")
+abline(a=0, b=0)
+
+lm.model<-lm(ComparePeakM$PeakM~ComparePeakM$MacroDDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakM$MacroDDDI[which(ComparePeakM$MacroDDDI!="NA")], t(res), xlab="Peak Magnitude Prediction", ylab="Residuals", main="MacroDDDI")
+abline(a=0, b=0)
+
+#Peak T
+lm.model<-lm(ComparePeakT$PeakT~ComparePeakT$Standard)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakT$Standard[which(ComparePeakT$Standard!="NA")], t(res), xlab="Peak Time Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+
+lm.model<-lm(ComparePeakT$PeakT~ComparePeakT$DDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakT$DDDI[which(ComparePeakT$DDDI!="NA")], t(res), xlab="Peak Time Prediction", ylab="Residuals", main="DDDI")
+abline(a=0, b=0)
+
+lm.model<-lm(ComparePeakT$PeakT~ComparePeakT$Macro)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakT$Macro[which(ComparePeakT$Macro!="NA")], t(res), xlab="Peak Time Prediction", ylab="Residuals", main="Macro")
+abline(a=0, b=0)
+
+lm.model<-lm(ComparePeakT$PeakT~ComparePeakT$MacroDDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakT$MacroDDDI[which(ComparePeakT$MacroDDDI!="NA")], t(res), xlab="Peak Time Prediction", ylab="Residuals", main="MacroDDDI")
+abline(a=0, b=0)
+
+#PeakJ
+lm.model<-lm(ComparePeakJ$PeakJ~ComparePeakJ$Standard)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakJ$Standard[which(ComparePeakJ$Standard!="NA")], t(res), xlab="Peak Joint Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+
+lm.model<-lm(ComparePeakJ$PeakJ~ComparePeakJ$DDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakJ$DDDI[which(ComparePeakJ$DDDI!="NA")], t(res), xlab="Peak Joint Prediction", ylab="Residuals", main="DDDI")
+abline(a=0, b=0)
+
+
+lm.model<-lm(ComparePeakJ$PeakJ~ComparePeakJ$Macro)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakJ$Macro[which(ComparePeakJ$Macro!="NA")], t(res), xlab="Peak Joint Prediction", ylab="Residuals", main="Macro")
+abline(a=0, b=0)
+
+
+lm.model<-lm(ComparePeakJ$PeakJ~ComparePeakJ$MacroDDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(ComparePeakJ$MacroDDDI[which(ComparePeakJ$MacroDDDI!="NA")], t(res), xlab="Peak Joint Prediction", ylab="Residuals", main="MacroDDDI")
+abline(a=0, b=0)
+
+#Decay 
+lm.model<-lm(CompareDecay$DecayRate~CompareDecay$Standard)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareDecay$Standard[which(CompareDecay$Standard!="NA")], t(res), xlab="Decay rate Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+
+lm.model<-lm(CompareDecay$DecayRate~CompareDecay$DDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareDecay$DDDI[which(CompareDecay$DDDI!="NA")], t(res), xlab="Decay rate Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+lm.model<-lm(CompareDecay$DecayRate~CompareDecay$Macro)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareDecay$Macro[which(CompareDecay$Macro!="NA")], t(res), xlab="Decay rate Prediction", ylab="Residuals", main="Macro")
+abline(a=0, b=0)
+
+lm.model<-lm(CompareDecay$DecayRate~CompareDecay$MacroDDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareDecay$MacroDDDI[which(CompareDecay$MacroDDDI!="NA")], t(res), xlab="Decay rate Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+
+#Setpoint
+lm.model<-lm(CompareSetpoint$Setpoint~CompareSetpoint$Standard)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareSetpoint$Standard[which(CompareSetpoint$Standard!="NA")], t(res), xlab="Setpoint Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+
+lm.model<-lm(CompareSetpoint$Setpoint~CompareSetpoint$DDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareSetpoint$DDDI[which(CompareSetpoint$DDDI!="NA")], t(res), xlab="Setpoint Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+lm.model<-lm(CompareSetpoint$Setpoint~CompareSetpoint$Macro)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareSetpoint$Macro[which(CompareSetpoint$Macro!="NA")], t(res), xlab="Setpoint Prediction", ylab="Residuals", main="Macro")
+abline(a=0, b=0)
+
+lm.model<-lm(CompareSetpoint$Setpoint~CompareSetpoint$MacroDDDI)
+summary(lm.model)
+res<- resid(lm.model)
+plot(CompareSetpoint$MacroDDDI[which(CompareSetpoint$MacroDDDI!="NA")], t(res), xlab="Setpoint Prediction", ylab="Residuals", main="Standard")
+abline(a=0, b=0)
+
+```

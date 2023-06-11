@@ -1,0 +1,575 @@
+---
+title: "MacroDDDI RV217"
+author: "Ellie Mainou"
+date: "3/29/2021"
+output: html_document
+---
+
+# Import dataset and relevant matrices 
+```{r}
+set.seed(1234)
+#Import modified dataset and make sure that it reads as numbers
+library(readxl)
+library(readr)
+library(deSolve)
+
+MacroDDDIFittedPrms <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_2.csv"))
+MacroDDDIFittedPrms<-MacroDDDIFittedPrms[, -1]
+```
+
+```{r}
+#RV217 Dataset
+AcuteData <- read.csv("HIV R files/Acute Infection Models/RV217ForModels4.csv", header=TRUE)
+#Matrix that contains initial parameter values for each patient
+MacroDDDI_PrmIV <- as.data.frame(read_excel("HIV R files/Acute Infection Models/Model Fitting/MacroDDDI_RV217_PrmIV.xlsx"))
+```
+
+```{r}
+ID<-unique(AcuteData$ID)  #participant IDs
+observations= length(ID)
+
+#Set up 
+Hstart=10^6
+b=0.01
+
+names<-c("ID", "log10lambda","alpha",  "eta", "k", "r", "gamma", "t0", "error value", "n", "nll", "AIC", "BIC", "AICc")
+
+#Equations
+MacroDDDI <- function (t, x, params) {
+ H <- x[1]
+ V <- x[2]
+ P <- x[3]
+ Hstart=Hstart
+ b=b
+ log10lambda<-params[1]
+ alpha <- params[2]
+ eta <- params[3]
+ k<-params[4]
+ r=params[5]
+ gamma=params[6]
+ t0=params[7]
+ #beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+ if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+ }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+ }
+ dH <- b*Hstart - b*H - (alpha^(gamma+1))*(P^(gamma+1))/H^(gamma+1-1)
+ dV <- 10^log10lambda*P - eta*V - beta*H*V
+ dP <-  beta*H*V - b*P -(alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+ list(c(dH,dV,dP))
+}
+
+#Objective function
+sse.sir.MacroDDDI <- function(params0, data, time.points) {
+   log10lambda <- params0[1]
+   alpha <- params0[2]
+   eta <- params0[3]
+   k <- params0[4]
+   r <- params0[5]
+   gamma<-params0[6]
+   t0<-params0[7]
+   H0 <- x_init[1]
+   V0 <- x_init[2]
+   P0 <- x_init[3]
+   out <-as.data.frame(ode(y= c(H=H0,V=V0,P=P0), times=c(t0,time.points), MacroDDDI, parms=c(log10lambda,alpha, eta, k, r, gamma, t0), method="lsoda"))
+   outV <- out$V[2:length(out$V)]
+   sse <- sum( (log10(outV) - data$log10vl)^2 )/n
+}
+
+#Simulate with fitted values 
+Model.MacroDDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+  if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+  }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+  }    
+    dH <- b*Hstart - b*H -  alpha^(gamma+1)*(P^(gamma+1))/H^(gamma+1-1)
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - (alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+k<-length(c("log10lambda", "alpha", "eta", "k", "r", "gamma", "t0" )) #number of parameters in the model 
+```
+
+
+
+```{r}
+#Create matrix that contains fitted values for each patient. 
+MacroDDDIFittedPrms<-as.data.frame(matrix(data=NA, nrow = observations, ncol= length(names)))
+colnames(MacroDDDIFittedPrms)<-names
+MacroDDDIFittedPrms$ID<-ID
+
+for (i in 50:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1, t0=as.numeric(MacroDDDI_PrmIV$t0[i]))
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0, 0,0,0,0,0.0001,-50),  upper= c(Inf,Inf,Inf,Inf,Inf, Inf, 100))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+}
+
+x<-c(5,10, 11, 15, 40, 47,  54)
+for (i in x){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1, t0=as.numeric(MacroDDDI_PrmIV$t0[i])-5)
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0, 0,0,0,0,0,-50),  upper= c(10,10,Inf,Inf,Inf, 5, 10))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+}
+
+x<-c(8, 21)
+for (i in x){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1, t0=as.numeric(MacroDDDI_PrmIV$t0[i]))
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0, 0.00001,0.00001,0.00001,0.00001,0,-50),  upper= c(10,10,200,30,5, 5, 10))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+}
+
+x<-c(3, 32, 37, 49)
+for (i in x){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1, t0=as.numeric(MacroDDDI_PrmIV$t0[i])+10)
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0, 0.00001,0.00001,0.00001,0.00001,0,-100),  upper= c(10,10,200,100,5, 5, 10))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+}
+
+write.csv(MacroDDDIFittedPrms, file="MacroDDDIFittedPrms_1.csv")
+```
+
+```{r}
+pdf("MacroDDDIFitsRV217_1.pdf")
+
+for (i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  MacroDDDIFittedPrms$n[i]=n
+  
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], max(time.points), 1), Model.MacroDDDI, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(MacroDDDIFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), col="red",type="l",  xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current))) 
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(MacroDDDIFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), xlab="", ylab="") 
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  MacroDDDIFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  MacroDDDIFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  MacroDDDIFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  MacroDDDIFittedPrms$AICc[i]=MacroDDDIFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(MacroDDDIFittedPrms$log10lambda, breaks=10, xlab = "log10lambda", main="")
+hist(MacroDDDIFittedPrms$alpha, breaks=10, xlab = "alpha", main="")
+hist(MacroDDDIFittedPrms$eta, breaks=10, xlab = "eta", main="")
+hist(MacroDDDIFittedPrms$r, breaks=10, xlab = "r", main="")
+hist(MacroDDDIFittedPrms$k, breaks=10, xlab = "k", main="")
+hist(MacroDDDIFittedPrms$t0, breaks=10, xlab = "t0", main="")
+hist(MacroDDDIFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(MacroDDDIFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(MacroDDDIFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(MacroDDDIFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+Summary_MacroDDDI<-as.data.frame(matrix(data=NA, nrow=3, ncol=k))
+colnames(Summary_MacroDDDI)=c("log10lambda","alpha", "eta", "k", "r", "t0")
+rownames(Summary_MacroDDDI)=c("mean", "median", "sd")
+
+for (j in 1:k){
+  Summary_MacroDDDI[1, j]=mean(MacroDDDIFittedPrms[, 1+j])
+  Summary_MacroDDDI[2, j]=median(MacroDDDIFittedPrms[, 1+j])
+  Summary_MacroDDDI[3, j]=sd(MacroDDDIFittedPrms[, 1+j])
+
+}
+
+write.csv(Summary_MacroDDDI, file="Summary_MacroDDDI_1.csv")
+
+
+write.csv(MacroDDDIFittedPrms, file="MacroDDDIFittedPrms_1.csv")
+```
+
+Now fit again the study participants for whom you removed a data point. 
+
+```{r}
+#RV217 Dataset
+AcuteData <- read.csv("HIV R files/Acute Infection Models/RV217ForModels3.csv", header=TRUE)
+#Matrix that contains initial parameter values for each patient
+MacroDDDI_PrmIV <- as.data.frame(read_excel("HIV R files/Acute Infection Models/Model Fitting/MacroDDDI_RV217_PrmIV.xlsx"))
+MacroDDDIFittedPrms <- as.data.frame(read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_1.csv"))
+```
+
+
+```{r}
+ID.remove<-c(20382, 20799, 20863, 21006, 21010)
+
+for(j in 2:length(ID.remove)){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID.remove[j]), ]
+  i=which(DDDIFittedPrms$ID==ID.remove[j])
+   time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1, t0=as.numeric(MacroDDDI_PrmIV$t0[i]))
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0, 0,0,0,0,0.0001,-50),  upper= c(Inf,Inf,Inf,Inf,Inf, Inf, 100))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+}
+
+j=1
+#Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID.remove[j]), ]
+  i=which(DDDIFittedPrms$ID==ID.remove[j])
+   time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1, t0=as.numeric(MacroDDDI_PrmIV$t0[i])+5)
+  
+ x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), method="L-BFGS-B", lower=c(0.00001,0.00001,0.00001,0.00001,0.00001,0,-50),  upper= c(Inf,Inf,Inf,Inf,Inf, Inf, 100))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+  
+  
+  i=which(ID==40283)
+
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+
+  params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]),
+               alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]),
+               eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]),
+               r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=as.numeric(MacroDDDI_PrmIV$gamma[i])-1,
+               t0=as.numeric(MacroDDDI_PrmIV$t0[i])-15)
+
+  x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points),
+                method="L-BFGS-B", lower=c(0, 0,0,0,0,0,-50),  
+                upper= c(10,10,Inf,Inf,Inf, 5, 10))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+  
+  
+  i=which(ID==40646)
+
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), 
+               alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), 
+               eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), 
+               r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=1, 
+               t0=as.numeric(MacroDDDI_PrmIV$t0[i])+2)
+  
+  x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), 
+                method="L-BFGS-B", lower=c(0, 0,0,0,0,0,-50),
+                upper= c(10,10,100,100,100, 5, 10))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+  
+  
+  i=which(ID==40646)
+
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+  params0 <- c(log10lambda=as.numeric(MacroDDDI_PrmIV$log10lambda[i]), 
+               alpha=as.numeric(MacroDDDI_PrmIV$alpha[i]), 
+               eta=as.numeric(MacroDDDI_PrmIV$eta[i]), k=as.numeric(MacroDDDI_PrmIV$k[i]), 
+               r=as.numeric(MacroDDDI_PrmIV$r[i]), gamma=1, 
+               t0=as.numeric(MacroDDDI_PrmIV$t0[i])+2)
+  
+  x_init <- c(H=Hstart,V=1, P=0)
+  
+  #Fitting step
+  fit0 <- optim(params0, sse.sir.MacroDDDI, data=vldata, time.points=c(time.points), 
+                method="L-BFGS-B", lower=c(0, 0,0,0,0,0,-50),
+                upper= c(10,10,100,100,100, 5, 10))
+  MacroDDDIFittedPrms$log10lambda[i]=fit0$par[1]
+  MacroDDDIFittedPrms$alpha[i]=fit0$par[2]
+  MacroDDDIFittedPrms$eta[i]=fit0$par[3]
+  MacroDDDIFittedPrms$k[i]=fit0$par[4]
+  MacroDDDIFittedPrms$r[i]=fit0$par[5]
+  MacroDDDIFittedPrms$gamma[i]=fit0$par[6]
+  MacroDDDIFittedPrms$t0[i]=fit0$par[7]
+  MacroDDDIFittedPrms$`error value`[i]=fit0$value
+```
+
+```{r}
+pdf("MacroDDDIFitsRV217_2.pdf")
+
+for (i in 1:observations){
+  #Data
+  patient.current<-AcuteData[which(AcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  MacroDDDIFittedPrms$n[i]=n
+  
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], max(time.points), 1), Model.MacroDDDI, parms=parameters, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln$time, log10(soln$V), xlim=c(MacroDDDIFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), col="red",type="l",  xlab="Time (days)", ylab="log10 viral load", main = bquote(ID == .(ID.current))) 
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black", xlim=c(MacroDDDIFittedPrms$t0[i], max(time.points)), ylim=c(0, 10), xlab="", ylab="") 
+legend("topright", legend=c("Data", "Model"), col=c("black", "red"), lty=1, cex=0.9)
+
+  soln<-soln[2:nrow(soln), ]
+  outV <- soln$V[time.points]
+  sse <- sum( (log10(outV) - vldata$log10vl)^2 )
+
+  nll<-log(sse) * (n/2) - n * (log(n) - log(2 * pi) - 1)/2
+
+  MacroDDDIFittedPrms$nll[i]<-nll
+
+  #Calculate AIC
+  MacroDDDIFittedPrms$AIC[i]=2*k+2*nll
+
+  #Calculate BIC
+  MacroDDDIFittedPrms$BIC[i]=log(n)*k+2*nll
+
+  #Calculate AICc
+  MacroDDDIFittedPrms$AICc[i]=MacroDDDIFittedPrms$AIC[i]+ (2*k^2+2*k)/(n-k-1)
+}
+
+hist(MacroDDDIFittedPrms$log10lambda, breaks=10, xlab = "log10lambda", main="")
+hist(MacroDDDIFittedPrms$alpha, breaks=10, xlab = "alpha", main="")
+hist(MacroDDDIFittedPrms$eta, breaks=10, xlab = "eta", main="")
+hist(MacroDDDIFittedPrms$r, breaks=10, xlab = "r", main="")
+hist(MacroDDDIFittedPrms$k, breaks=10, xlab = "k", main="")
+hist(MacroDDDIFittedPrms$t0, breaks=10, xlab = "t0", main="")
+hist(MacroDDDIFittedPrms$`error value`, breaks=10, xlab = "error value", main="")
+hist(MacroDDDIFittedPrms$AIC, breaks=10, xlab = "AIC", main="")
+hist(MacroDDDIFittedPrms$BIC, breaks=10, xlab = "BIC", main="")
+hist(MacroDDDIFittedPrms$AICc, breaks=10, xlab = "AICc", main="")
+
+dev.off()
+
+Summary_MacroDDDI<-as.data.frame(matrix(data=NA, nrow=3, ncol=k))
+colnames(Summary_MacroDDDI)=c("log10lambda","alpha", "eta", "k", "r", "gamma", "t0")
+rownames(Summary_MacroDDDI)=c("mean", "median", "sd")
+
+# for (j in 1:k){
+#   Summary_MacroDDDI[1, j]=mean(MacroDDDIFittedPrms[, 1+j])
+#   Summary_MacroDDDI[2, j]=median(MacroDDDIFittedPrms[, 1+j])
+#   Summary_MacroDDDI[3, j]=sd(MacroDDDIFittedPrms[, 1+j])
+# 
+# }
+
+for (j in 1:k){
+  Summary_MacroDDDI[1, j]=mean(MacroDDDIFittedPrms[, j])
+  Summary_MacroDDDI[2, j]=median(MacroDDDIFittedPrms[, j])
+  Summary_MacroDDDI[3, j]=sd(MacroDDDIFittedPrms[, j])
+
+}
+
+
+write.csv(Summary_MacroDDDI, file="Summary_MacroDDDI_2.csv")
+
+
+write.csv(MacroDDDIFittedPrms, file="MacroDDDIFittedPrms_2.csv")
+```
+
+
+Calculate beta
+
+```{r}
+Model.MacroDDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+  if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+  }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+  }    
+    dH <- b*Hstart - b*H -  alpha^(gamma+1)*(P^(gamma+1))/H^(gamma+1-1)
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - (alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+beta<-c()
+for (i in 1:observations){
+  if ((MacroDDDIFittedPrms$gamma[i]+1)>1){
+    beta[i]=(MacroDDDIFittedPrms$r[i]+MacroDDDIFittedPrms$eta[i])*(MacroDDDIFittedPrms$r[i]+b)/Hstart/(10^MacroDDDIFittedPrms$log10lambda[i]-MacroDDDIFittedPrms$r[i]-b)
+  }else{
+    beta[i]=(MacroDDDIFittedPrms$r[i]+MacroDDDIFittedPrms$eta[i])*(MacroDDDIFittedPrms$r[i]+b+MacroDDDIFittedPrms$alpha[i])/Hstart/(10^MacroDDDIFittedPrms$log10lambda[i]-MacroDDDIFittedPrms$r[i]-b-MacroDDDIFittedPrms$alpha[i])
+  }
+  
+}
+
+mean(beta)
+median(beta)
+```
+

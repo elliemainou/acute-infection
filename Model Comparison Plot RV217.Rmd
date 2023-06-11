@@ -1,0 +1,511 @@
+---
+title: "Model Comparison Plot"
+author: "Ellie Mainou"
+date: "5/13/2021"
+output: html_document
+---
+
+Estimate 
+1. Growth rate 
+2. Decay rate
+
+for all four models: 1. Standard 2. DDDI 3. Macro 4. MacroDDDI
+
+For growth rate: run the model. Use the model-derived viral load measurements for the times that were used as growth data points. Note: disregard the last one--because in many cases you have already reached decay 
+```{r}
+set.seed(1234)
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+```{r}
+#Import modified dataset and make sure that it reads as numbers
+NewAcuteData <- read_csv("HIV R files/Acute Infection Models/RV217ForModels5.csv")
+NewAcuteData <- read_csv("~HIV R files/Acute Infection Models/RV217ForModels5.csv")
+
+#Matrices with parameter values and AIC, BIC, AICc
+StandardFittedPrms <- read_csv("~/HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_5.csv")
+DDDIFittedPrms <- read_csv("~/HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_4.csv")
+MacroFittedPrms <- read_csv("~/HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_4.csv")
+MacroDDDIFittedPrms <- read_csv("~/HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_3.csv")
+```
+
+
+```{r}
+ID<-unique(NewAcuteData$MatchedID)  #participant IDs
+observations= length(ID)
+
+# Model Equations
+Hstart=10^6
+b=0.01
+d=0.01
+T.start=10^6
+
+Model.Standard <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( (delta+r)*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+} 
+
+Model.DDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( r*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I^(gamma+1)
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+}
+
+Model.Macro <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+    beta=(r+eta)*(r+alpha+b)/Hstart/(10^log10lambda-r-alpha-b)
+    dH <- b*Hstart - b*H - alpha*P 
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - alpha*P - alpha*(1+k)/k*P^2/H 
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+Model.MacroDDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+  if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+  }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+  }    
+    dH <- b*Hstart - b*H -  alpha^(gamma+1)*(P^(gamma+1))/H^(gamma+1-1)
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - (alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+}
+```
+
+
+```{r}
+#Beta for Macro and MacroDDDI
+
+MacroFittedPrms$beta=(MacroFittedPrms$r+MacroFittedPrms$eta)*(MacroFittedPrms$r+MacroFittedPrms$alpha+b)/Hstart/(10^MacroFittedPrms$log10lambda-MacroFittedPrms$r-MacroFittedPrms$alpha-b)
+
+
+MacroDDDIFittedPrms$beta=(MacroDDDIFittedPrms$r+MacroDDDIFittedPrms$eta)*(MacroDDDIFittedPrms$r+b+MacroDDDIFittedPrms$alpha)/Hstart/(10^MacroDDDIFittedPrms$log10lambda-MacroDDDIFittedPrms$r-b-MacroDDDIFittedPrms$alpha)
+
+```
+
+
+```{r}
+#Round t0 to the first decimal place
+StandardFittedPrms$t0<-round(StandardFittedPrms$t0, 1)
+DDDIFittedPrms$t0<-round(DDDIFittedPrms$t0, 1)
+MacroFittedPrms$t0<-round(MacroFittedPrms$t0, 1)
+MacroDDDIFittedPrms$t0<-round(MacroDDDIFittedPrms$t0, 1)
+```
+
+Just the plot 
+```{r}
+#pdf("ModelComparisonrv217MatchedIDs.pdf")
+pdf("ModelComparisonrv217OneplotNewMatchedIDs.pdf")
+
+par(mfrow = c(3,5))
+
+i=1
+ #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$MatchedID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+
+#Run ODES
+
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 90, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 90, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="black",type="l", lwd=2,  xlab="Days since pos. test", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="green",type="l", lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="deeppink",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="sienna2",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="", ylab="")
+legend("topright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI"), col=c("black", "green", "deeppink", "sienna2"), lty=1, cex=0.4)
+  
+#for (i in 1:observations){
+
+for (i in 2:observations){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$MatchedID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+  
+
+  parameters.Staff=list(    
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i], 
+  t0=StandardFittedPrms$t0[i]
+  )
+  
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 90, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+  
+
+  parameters.Hol=list(    
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i], 
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+  
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 90, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+ 
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="black",type="l", lwd=2,  xlab="Days since pos. test", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="green",type="l", lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="deeppink",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="sienna2",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="", ylab="")
+# legend("topright", legend=c( "Standard", "DDDI", "MOI", "DDDI&MOI"), col=c("black", "green", "deeppink", "sienna2"), lty=1, cex=0.9 )
+}
+
+dev.off()
+```
+
+
+```{r}
+pdf("ModelComparisonrv217Fit3.pdf")
+
+par(mfrow = c(3,5))
+
+x<-c(31:35,41:43)
+for (i in x){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$MatchedID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+  
+
+  parameters.Staff=list(    
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i], 
+  t0=StandardFittedPrms$t0[i]
+  )
+  
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 90, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+  
+
+  parameters.Hol=list(    
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i], 
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+  
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 90, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+ 
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="black",type="l", lwd=2,  xlab="Days since pos. test", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="green",type="l", lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="deeppink",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="sienna2",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="", ylab="")
+}
+
+dev.off()
+```
+
+```{r}
+pdf("ModelComparisonrv217Fit4.pdf")
+
+par(mfrow = c(3,5))
+
+x<-c(36:40)
+for (i in x){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$MatchedID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+  
+
+  parameters.Staff=list(    
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i], 
+  t0=StandardFittedPrms$t0[i]
+  )
+  
+soln.Standard=as.data.frame(ode(y=init.cond, times=seq(StandardFittedPrms$t0[i], 90, 0.1), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+  
+
+  parameters.Hol=list(    
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i], 
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+  
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=seq(DDDIFittedPrms$t0[i], 90, 0.1), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=seq(MacroFittedPrms$t0[i], 90, 0.1), Model.Macro, parms=parameters.Koel, hmax=0.01))
+ 
+  #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=seq(MacroDDDIFittedPrms$t0[i], 90, 0.1), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+
+#Plot results
+ID.current <- ID[i]
+bquote(ID == ID.current)
+bquote(ID == .(ID.current))
+
+  plot(soln.Standard$time, log10(soln.Standard$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="black",type="l", lwd=2,  xlab="Days since pos. test", ylab="log10 viral load", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.DDDI$time, log10(soln.DDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="green",type="l", lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.Macro$time, log10(soln.Macro$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="deeppink",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(soln.MacroDDDI$time, log10(soln.MacroDDDI$V), xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), col="sienna2",type="l",lwd=2,  xlab="", ylab="", main = bquote(ID == .(ID.current)))
+  par(new=TRUE)
+  plot(vldata$time.points, vldata$log10vl,col="black",  xlim=c(min(StandardFittedPrms$t0[i], DDDIFittedPrms$t0[i], MacroFittedPrms$t0[i], MacroDDDIFittedPrms$t0[i]), (max(time.points)+2)), ylim=c(0, 10), xlab="", ylab="")
+}
+
+dev.off()
+```

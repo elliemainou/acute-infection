@@ -1,0 +1,237 @@
+---
+title: "Estimate Characteristics"
+author: "Ellie Mainou"
+date: "4/6/2021"
+output: html_document
+---
+
+Estimate Setpoint
+
+
+for all four models: 1. Standard 2. DDDI 3. Macro 4. MacroDDDI
+
+For growth rate: run the model to equilibrium. The equilibrium is the model-derived setpoint. Peak VL magnitude is just the max viral load measurement of that model, Peak VL time is the time post-positive test when the peak magnitude occurs. Peak VL joint is a measure that tries to capture the magnitude and time of the peak jointly. 
+
+
+```{r}
+library(readxl)
+library(readr)
+library(deSolve)
+```
+
+```{r}
+#Import modified dataset and make sure that it reads as numbers
+NewAcuteData <- read_csv("HIV R files/Acute Infection Models/RV217ForModels4.csv")
+#Matrices with parameter values and AIC, BIC, AICc
+StandardFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/StandardFittedPrms_4.csv")
+DDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/DDDIFittedPrms_3.csv")
+MacroFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroFittedPrms_3.csv")
+MacroDDDIFittedPrms <- read_csv("HIV R files/Acute Infection Models/Model Fitting/MacroDDDIFittedPrms_2.csv")
+PrmErrorMatrixRV217_5 <- read_csv("HIV R files/RV217 Data Analysis /PrmErrorMatrixRV217_5.csv")
+```
+
+
+
+```{r}
+ID<-unique(NewAcuteData$ID)  #participant IDs
+observations= length(ID)
+```
+
+
+```{r}
+# Model Equations
+Hstart=1e6
+b=0.01
+d=0.01
+T.start=1e6
+
+Model.Standard <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( (delta+r)*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+} 
+
+Model.DDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{  
+    k <- ( r*(c+r) ) / ( 10^log10p*T.start )
+    dT <- d*T.start -d*T - k*T*V 
+    dI <- k*T*V - delta*I^(gamma+1)
+    dV <- 10^log10p*I - c*V 
+    dy=c(dT, dI, dV)
+    return(list(dy))
+  }) 
+}
+
+Model.Macro <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+    beta=(r+eta)*(r+alpha+b)/Hstart/(10^log10lambda-r-alpha-b)
+    dH <- b*Hstart - b*H - alpha*P 
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - alpha*P - alpha*(1+k)/k*P^2/H 
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+} 
+
+Model.MacroDDDI <- function(t, y, parms) { 
+  with(as.list(c(y,parms)),{ 
+  if ((gamma+1)>1){  #it should be 1 but in the equation I use gamma+1 so I can make the lower bound zero
+    beta=(r+eta)*(r+b)/Hstart/(10^log10lambda-r-b)
+  }else if((gamma+1)==1){ beta=(r+eta)*(r+b+alpha)/Hstart/(10^log10lambda-r-b-alpha)
+  }    
+    dH <- b*Hstart - b*H -  alpha^(gamma+1)*(P^(gamma+1))/H^(gamma+1-1)
+    dV <- 10^log10lambda*P - eta*V - beta*H*V
+    dP <-  beta*H*V - b*P - (alpha^(gamma+1))*((P^(gamma+1))/H^(gamma+1-1))*(1+ (P/H)*(1+k)/k)^(gamma+1)
+    dy=c(dH,dV,dP)
+    return(list(dy))
+  }) 
+}
+```
+
+
+```{r}
+#Beta for Macro and MacroDDDI
+
+MacroFittedPrms$beta=(MacroFittedPrms$r+MacroFittedPrms$eta)*(MacroFittedPrms$r+MacroFittedPrms$alpha+b)/Hstart/(10^MacroFittedPrms$log10lambda-MacroFittedPrms$r-MacroFittedPrms$alpha-b)
+
+
+MacroDDDIFittedPrms$beta=(MacroDDDIFittedPrms$r+MacroDDDIFittedPrms$eta)*(MacroDDDIFittedPrms$r+b+MacroDDDIFittedPrms$alpha)/Hstart/(10^MacroDDDIFittedPrms$log10lambda-MacroDDDIFittedPrms$r-b-MacroDDDIFittedPrms$alpha)
+
+```
+
+
+```{r}
+# Matrices with growth, peak, decay, setpoint and squared errors among models 
+
+names<-c("ID", "Setpoint", "Standard", "SQ_Standard", "DDDI", "SQ_DDDI", "Macro", "SQ_Macro", "MacroDDDI", "SQ_MacroDDDI",  "Model")
+CompareSetpoint<-as.data.frame(matrix(data=NA, nrow=observations, ncol=length(names)))
+colnames(CompareSetpoint)<-names
+CompareSetpoint$ID<-ID
+
+```
+
+
+```{r}
+#Round t0 to the first decimal place
+StandardFittedPrms$t0<-round(StandardFittedPrms$t0, 1)
+DDDIFittedPrms$t0<-round(DDDIFittedPrms$t0, 1)
+MacroFittedPrms$t0<-round(MacroFittedPrms$t0, 1)
+MacroDDDIFittedPrms$t0<-round(MacroDDDIFittedPrms$t0, 1)
+```
+
+```{r}
+for (i in 1:observations){
+  #Data
+  patient.current<-NewAcuteData[which(NewAcuteData$ID==ID[i]), ]
+  time.points<-patient.current$days
+  log10vl<-patient.current$log10VL
+  vldata <- data.frame(time.points,log10vl)
+  n=nrow(vldata)
+  
+#Run ODES
+  
+  #Standard
+  init.cond=c(T=T.start, I=StandardFittedPrms$c[i]*1/(10^StandardFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Staff=list(
+  d=d,
+  T.start=T.start,
+  log10p=StandardFittedPrms$log10p[i],
+  delta=StandardFittedPrms$delta[i],
+  c=StandardFittedPrms$c[i],
+  r=StandardFittedPrms$r[i],
+  t0=StandardFittedPrms$t0[i]
+  )
+
+soln.Standard=as.data.frame(ode(y=init.cond, times=c(seq(StandardFittedPrms$t0[i], 0, 0.01), 0, seq(0.01, 1000, 0.01)), Model.Standard, parms=parameters.Staff, hmax=0.01))
+
+#DDDI
+init.cond=c(T=T.start, I=DDDIFittedPrms$c[i]*1/(10^DDDIFittedPrms$log10p[i]), V=1)
+
+
+  parameters.Hol=list(
+  d=d,
+  T.start=T.start,
+  log10p=DDDIFittedPrms$log10p[i],
+  delta=DDDIFittedPrms$delta[i],
+  c=DDDIFittedPrms$c[i],
+  r=DDDIFittedPrms$r[i],
+  gamma=DDDIFittedPrms$gamma[i],
+  t0=DDDIFittedPrms$t0[i]
+  )
+
+  soln.DDDI=as.data.frame(ode(y=init.cond, times=c(seq(DDDIFittedPrms$t0[i], 0, 0.01), 0, seq(0.01, 1000, 0.01)), Model.DDDI, parms=parameters.Hol, hmax=0.01))
+
+
+#Macro
+init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.Koel=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroFittedPrms$log10lambda[i],
+  alpha=MacroFittedPrms$alpha[i],
+  eta=MacroFittedPrms$eta[i],
+  k=MacroFittedPrms$k[i],
+  r=MacroFittedPrms$r[i],
+  t0=MacroFittedPrms$t0[i]
+  )
+
+  soln.Macro=as.data.frame(ode(y=init.cond, times=c(seq(MacroFittedPrms$t0[i], 0, 0.01), seq(0.01, 1000, 0.01)), Model.Macro, parms=parameters.Koel, hmax=0.01))
+
+    #MacroDDDI
+  init.cond=c(H=Hstart, V=1, P=0)
+
+  parameters.KoelD=list(
+  b=b,
+  Hstart=Hstart,
+  log10lambda=MacroDDDIFittedPrms$log10lambda[i],
+  alpha=MacroDDDIFittedPrms$alpha[i],
+  eta=MacroDDDIFittedPrms$eta[i],
+  k=MacroDDDIFittedPrms$k[i],
+  r=MacroDDDIFittedPrms$r[i],
+  gamma=MacroDDDIFittedPrms$gamma[i],
+  t0=MacroDDDIFittedPrms$t0[i]
+  )
+
+  soln.MacroDDDI=as.data.frame(ode(y=init.cond, times=c(seq(MacroDDDIFittedPrms$t0[i], 0, 0.01), seq(0.01, 1000, 0.01)), Model.MacroDDDI, parms=parameters.KoelD, hmax=0.01))
+  
+#Setpoint
+if(!is.na(PrmErrorMatrixRV217_5$s[which(PrmErrorMatrixRV217_5$ID==ID[i])])){
+CompareSetpoint$Setpoint[i]<- PrmErrorMatrixRV217_5$s[which(PrmErrorMatrixRV217_5$ID==ID[i])]
+CompareSetpoint$Standard[i]<-log10(soln.Standard$V[length(soln.Standard$V)])
+CompareSetpoint$Macro[i]<-log10(soln.Macro$V[length(soln.Macro$V)])
+CompareSetpoint$DDDI[i]<-log10(soln.DDDI$V[length(soln.DDDI$V)])
+CompareSetpoint$MacroDDDI[i]<-log10(soln.MacroDDDI$V[length(soln.MacroDDDI$V)])
+
+#Find which model predicts setpoint better
+x0<-(CompareSetpoint$Setpoint[i]-CompareSetpoint$Standard[i])^2
+CompareSetpoint$SQ_Standard[i]<-x0
+x1<-(CompareSetpoint$Setpoint[i]-CompareSetpoint$DDDI[i])^2
+CompareSetpoint$SQ_DDDI[i]<-x1
+x2<-(CompareSetpoint$Setpoint[i]-CompareSetpoint$Macro[i])^2
+CompareSetpoint$SQ_Macro[i]<-x2
+x3<-(CompareSetpoint$Setpoint[i]-CompareSetpoint$MacroDDDI[i])^2
+CompareSetpoint$SQ_MacroDDDI[i]<-x3
+
+if( min(x0, x1, x2, x3)==x0){
+  CompareSetpoint$Model[i]<-"Standard"
+  }else if ( min(x0, x1, x2,x3)==x1){
+      CompareSetpoint$Model[i]<-"DDDI"
+    }else if ( min(x0, x1, x2, x3)==x2){
+      CompareSetpoint$Model[i]<-"Macro"
+    }else if ( min(x0, x1, x2,x3)==x3){
+      CompareSetpoint$Model[i]<-"MacroDDDI"
+    }
+}
+
+}
+
+write.csv(CompareSetpoint, file="CompareSetpoint.csv")
+```
